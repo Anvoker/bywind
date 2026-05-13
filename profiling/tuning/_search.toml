@@ -1,0 +1,41 @@
+# PSO sizing + study-time pins shared by every tuning-study route.
+#
+# Sizing pinned at upstream `SearchSettings::default()` (40 / 40 / 40 /
+# 30) — the budget real users face. Tuning at *this* budget is the
+# whole point: PSO coefficients control how fast the swarm finds the
+# basin in a fixed budget, so a generous budget (we tried 110/55 first)
+# masks coefficient sensitivity by giving every reasonable config
+# enough headroom to converge anyway. See plan/pso-tuning.md "Particle
+# and iteration counts" for the post-mortem of the first study run.
+#
+# `[tune]` controls the study's search space: the three GBest
+# coefficients are pinned at the run-#3 textbook (Clerc-Kennedy) values
+# (`c1 ≈ c2 ≈ 2.0`, the most theoretically defensible choice from the
+# prior 3-D study) so this study isolates the kick-mover effect. The
+# baseline file used here (`baseline-textbook.json`) was recorded with
+# those same gbest values + default kick params, so a trial score of
+# 1.0 means "kick-mover knobs were no help beyond textbook gbest".
+#
+# `path_kick_decay_ratio` is a tune-side virtual knob: the trial side
+# computes `gamma_min = gamma_0 × ratio` so the cosine schedule's
+# `min ≤ max` invariant is intrinsic to the parameterisation.
+#
+# Note: with current [tune] semantics, a missing field defaults to
+# "vary in the default range", which would override any pin in
+# [search]. The gbest pins therefore go in [tune] as scalars rather
+# than in [search]. Fix-up of the fall-through behaviour is on the
+# follow-up list.
+
+[search]
+particles_space = 40
+particles_time  = 40
+iter_space      = 40
+iter_time       = 30
+
+[tune]
+inertia                    = 0.328
+cognitive_coeff            = 1.98
+social_coeff               = 1.99
+path_kick_probability      = { min = 0.0, max = 0.5 }
+path_kick_gamma_0_fraction = { min = 0.0, max = 0.20 }
+path_kick_decay_ratio      = { min = 0.0, max = 1.0 }

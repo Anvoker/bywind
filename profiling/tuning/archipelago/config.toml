@@ -1,0 +1,22 @@
+# Tuning route: archipelago
+#
+# Athens (Piraeus) → Antalya (Turkey south coast), N = 40. Weaves through
+# the southern Aegean, around Crete and the Dodecanese islands (Karpathos,
+# Rhodes), and across to the Turkish Mediterranean coast. ~1100 km. All
+# island gaps are >50 km, comfortably above the 0.25° landmass grid
+# resolution.
+#
+# Replaces the original Athens → Istanbul attempt, which failed because
+# the Bosphorus (~1 km) and Dardanelles (~2-3 km) are below grid
+# resolution and get classified as land — A* could not find any sea path.
+#
+# Slot: TRAINING.
+
+[run]
+start = [23.65, 37.94]    # Piraeus, Athens
+end   = [30.71, 36.89]    # Antalya, Turkey south coast
+waypoints = 40
+
+time_weight = 1.0
+fuel_weight = 10.0
+land_weight = 50.0

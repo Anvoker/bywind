@@ -1,0 +1,19 @@
+# Profiling scenario: large / transoceanic with landmass detour.
+#
+# Lisbon → Mumbai, N = 40 waypoints. The great-circle line slices across the
+# Sahara, Middle East, and India; the optimal sea route runs south past West
+# Africa, around the Cape of Good Hope, and across the Indian Ocean to
+# Mumbai. ~12 000 km, the classic transoceanic landmass detour and a real
+# shipping route.
+#
+# Bake / load-baked are NOT specified here — supply --save-baked the first
+# time, then --load-baked profiling/large/baked.bk1 for every subsequent run.
+
+[run]
+start = [-9.14, 38.72]     # Lisbon (lon, lat)
+end   = [72.83, 19.08]     # Mumbai (lon, lat)
+waypoints = 40
+
+time_weight = 1.0
+fuel_weight = 10.0
+land_weight = 50.0

@@ -1,0 +1,47 @@
+[package]
+name = "swarmkit-sailing"
+description = "Sailing-route PSO physics on top of the `swarmkit` particle-swarm library. Spherical-Earth coordinates, wind / boat / landmass traits, baseline / mutation / time movers."
+keywords = ["sailing", "pso", "optimization", "particle-swarm", "metaheuristic"]
+categories = ["algorithms", "mathematics", "science::geo"]
+readme = "README.md"
+include = [
+    "src/**/*.rs",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/swarmkit-sailing"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[dependencies]
+swarmkit.workspace = true
+rand.workspace = true
+rayon.workspace = true
+derive_more = { version = "2.1.1", features = ["full"] }
+
+[lints]
+workspace = true
+
+[features]
+# Enables atomic counters inside the segment-range cache so tests can observe
+# how often PSO particles probe past each segment's padded departure-time
+# range (which falls back to flat extrapolation on the table's endpoint).
+# Off by default — the counters add atomic traffic on the query hot path.
+probe-stats = []
+
+# Enables sub-stage `Instant::now` counters around the hot paths in the
+# sailing search (mover, boundary, fitness, segment-cache build). Used by
+# the profiling harness in `bywind/profiling/`. Off by default — the
+# counters add atomic-add traffic on every call to those sites.
+profile-timers = []

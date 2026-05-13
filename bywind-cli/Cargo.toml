@@ -1,0 +1,54 @@
+[package]
+name = "bywind-cli"
+description = "Command-line frontend for the `bywind` sailing-route optimiser: search, convert, info, inspect, tune."
+keywords = ["sailing", "routing", "cli", "wind", "grib2"]
+categories = ["command-line-utilities", "science::geo"]
+readme = "README.md"
+include = [
+    "src/**/*.rs",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+]
+
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/bywind-cli"
+
+# Opt out of the cargo-dist release pipeline — for v0.1 we only ship
+# bywind-viz binaries. Flip to `dist = true` (or delete this stanza)
+# when you want the CLI to be part of the GitHub release artifacts too.
+[package.metadata.dist]
+dist = false
+
+[dependencies]
+bywind = { path = "..", version = "0.1" }
+clap = { version = "4", features = ["derive"] }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# Used by the `fetch` subcommand: parse `<start>` / `<end>` flags and
+# default the end-of-window to "now" when the user omits it. The `clock`
+# feature pulls in `Utc::now`; the core `bywind::fetch` API stays
+# clock-agnostic so the library remains testable without it.
+chrono = { workspace = true, features = ["clock"] }
+# Bayesian / population-based optimisation with an Optuna-like API.
+# Used by the `tune` subcommand to drive the PSO-tuning study (TPE
+# sampler over the 3 GBest velocity coefficients). `journal` enables
+# JSONL trial persistence so an interrupted study leaves an
+# inspectable record.
+optimizer = { version = "1", features = ["journal"] }
+
+[features]
+# Forwarding feature for the profiling harness (see
+# `bywind/profiling/`). Enables sub-stage timers in the sailing search.
+profile-timers = ["bywind/profile-timers"]
+
+[lints]
+workspace = true

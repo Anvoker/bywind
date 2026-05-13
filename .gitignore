@@ -1,0 +1,14 @@
+/target
+.idea
+foo.txt
+
+# Per-user / per-machine Claude Code config (settings, plans, agent
+# scratchpads, captured clippy dumps). Nothing in here should ship.
+.claude/
+
+# Fetch-dialog default output names. The GUI's `File → Fetch from AWS…`
+# defaults to writing `fetched.wcav` (or `.grib2`) to the working
+# directory; ignore them so a hands-on test doesn't bait an
+# accidental commit.
+/fetched.wcav
+/fetched.grib2

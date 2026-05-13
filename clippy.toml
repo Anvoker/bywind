@@ -1,0 +1,100 @@
+# Configuration for the strict clippy lint set defined in
+# `Cargo.toml` under `[workspace.lints.clippy]`. Without this file,
+# the `disallowed_macros` / `disallowed_methods` / `disallowed_names` /
+# `disallowed_script_idents` / `disallowed_types` lints are silent
+# no-ops because they have nothing to flag.
+
+# `disallowed_script_idents` — restrict identifiers to the Latin script.
+# Stops a copy-paste from inadvertently introducing visually-confusable
+# identifiers in another script.
+allowed-scripts = ["Latin"]
+
+# `disallowed_names` — names that should never appear in real code.
+# Defaults to ["foo", "bar", "baz", "quux"]; we extend with a few more
+# placeholders the team has been known to forget about.
+disallowed-names = ["foo", "bar", "baz", "qux", "quux", "tmp", "todo", "xxx"]
+
+# `disallowed_macros` — populate as we discover macros that have a
+# better in-tree alternative. Empty for now.
+disallowed-macros = []
+
+# `disallowed_methods` — populate as we discover methods that have a
+# better in-tree alternative. Empty for now.
+disallowed-methods = []
+
+# `disallowed_types` — populate as we discover types we'd rather not
+# see in this codebase. Empty for now.
+disallowed-types = []
+
+# `doc_markdown` — extend the built-in identifier allow-list with
+# domain terms that occur in `///` doc comments and would otherwise
+# be flagged for missing backticks.
+doc-valid-idents = [
+    # rustc additions
+    "..",
+
+    # Project / domain terms.
+    "GBest",
+    "LBest",
+    "VonNeumann",
+    "GRIB2",
+    "GFS",
+    "IDW",
+    "PSO",
+    "Bywind",
+    "WindMap",
+    "TimedWindMap",
+    "BakedWindMap",
+    "WeatherRow",
+    "WindSample",
+    "RouteEvolution",
+    "LonLatBbox",
+    "Grib2Bbox",
+    "MapBounds",
+    "BakeBounds",
+    "RouteBounds",
+    "SegmentMetrics",
+    "SavedSolution",
+    "LandmassGrid",
+    "TangentMetres",
+    "swarmkit",
+    "swarmkit-sailing",
+    "bywind",
+    "bywind-viz",
+    "bywind-cli",
+
+    # External crates / libraries that show up by name in docs.
+    "egui",
+    "eframe",
+    "kiddo",
+    "rayon",
+    "serde",
+    "earcutr",
+    "trunk",
+    "zstd",
+    "ruzstd",
+    "wasm32",
+]
+
+# `unwrap_used` is set to `warn` workspace-wide; tests are
+# (deliberately) full of `.unwrap()` calls. Pair the lint with this
+# config so test code doesn't have to opt out one-by-one.
+allow-unwrap-in-tests = true
+
+# `expect_used` would be similarly noisy in tests if it were ever
+# enabled. Already harmless today, but keeps things consistent if we
+# turn it on later.
+allow-expect-in-tests = true
+
+# `panic` / `indexing_slicing` / `dbg_macro` are all `warn` workspace-wide
+# but are fine in tests: assert!/panic! in checks, direct `arr[i]` into
+# known-shape fixtures, `dbg!()` for one-off investigation. Allow them in
+# `#[cfg(test)]` to avoid per-call opt-outs.
+allow-panic-in-tests = true
+allow-indexing-slicing-in-tests = true
+allow-dbg-in-tests = true
+
+# `too_many_lines` defaults to 100, which is too aggressive for a
+# Rust codebase that uses match-heavy dispatch and explicit error
+# enums. 150 is closer to the project's natural cadence.
+too-many-lines-threshold = 150

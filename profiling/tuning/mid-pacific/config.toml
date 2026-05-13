@@ -1,0 +1,25 @@
+# Tuning route: mid-pacific (synthetic)
+#
+# 30°N from 175°W to 130°W. ~4300 km open ocean, no land penalty
+# engaged — pure speed/fuel optimisation. Avoids the antimeridian
+# (both lons in [-180, 0]) so route_bounds machinery doesn't have to
+# stretch around it.
+#
+# Slot: TRAINING. The mid-Atlantic counterpart is in HOLD-OUT, so the
+# study can answer "do tuned coefficients learned on one open-ocean
+# route generalise to another?".
+
+[run]
+start = [-175.0, 30.0]
+end   = [-130.0, 30.0]
+waypoints = 40
+# Pinned bounds: auto-bounds (which calls A* + accumulates polyline span)
+# expanded to a full-world strip for this route, presumably because A*'s
+# polyline includes a wraparound. Pin a tight rectangle around the
+# great-circle arc (lat 30°N ± 8°, lon covering both endpoints with
+# ~5° padding) to keep the bake compact.
+bounds = [-180.0, 22.0, -125.0, 38.0]
+
+time_weight = 1.0
+fuel_weight = 10.0
+land_weight = 50.0

@@ -1,0 +1,18 @@
+# Tuning route: coastal-detour
+#
+# New York → New Orleans, N = 40. Same start/end as profiling/small but
+# bumped to N=40 for uniformity across the tuning-study battery (see
+# plan/pso-tuning.md). The optimal sea route exits the Atlantic, runs south past
+# Florida, and crosses the Gulf of Mexico into NOLA. ~3000 km including
+# the detour, with the LandmassSource path actively engaged at Florida.
+#
+# Slot: TRAINING.
+
+[run]
+start = [-74.00, 40.71]    # New York harbor
+end   = [-90.07, 29.95]    # New Orleans
+waypoints = 40
+
+time_weight = 1.0
+fuel_weight = 10.0
+land_weight = 50.0

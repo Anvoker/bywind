@@ -1,0 +1,17 @@
+# Tuning route: short-easy
+#
+# Boston → Halifax, N = 20. Open Atlantic, ~600 km, almost no land
+# between the two harbours. Sanity-check route — fast convergence,
+# light per-trial cost. The only N=20 route in the battery (everything
+# else is N=40) — kept short so it stays a fast probe.
+#
+# Slot: TRAINING.
+
+[run]
+start = [-71.05, 42.36]    # Boston harbor
+end   = [-63.58, 44.65]    # Halifax harbor
+waypoints = 20
+
+time_weight = 1.0
+fuel_weight = 10.0
+land_weight = 50.0

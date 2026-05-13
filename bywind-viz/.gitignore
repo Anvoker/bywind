@@ -1,0 +1,10 @@
+/target
+/dist
+.idea
+
+# Optional bundled sample wind dataset. Pre-encoded `.wcav` produced by
+# `bywind-cli convert <grib2> --out bywind-viz/assets/sample_wind.wcav`.
+# Not committed because it's ~25 MB of binary that doesn't deduplicate
+# well in git; release builds drop the file in here and enable the
+# `bundled-sample` cargo feature.
+/assets/sample_wind.wcav

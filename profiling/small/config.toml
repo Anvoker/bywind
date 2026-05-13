@@ -1,0 +1,26 @@
+# Profiling scenario: small / coastal with landmass detour.
+#
+# New York → New Orleans, N = 20 waypoints. The great-circle line goes inland
+# through the southeastern US; the optimal sea route exits the Atlantic, runs
+# south past Florida, and crosses the Gulf of Mexico into NOLA. ~3000 km
+# including the detour, with the LandmassSource path actively engaged at
+# Florida. Default PSO sizing.
+#
+# Bake / load-baked are NOT specified here — supply --save-baked the first
+# time, then --load-baked profiling/small/baked.bk1 for every subsequent run.
+
+[run]
+start = [-74.00, 40.71]    # New York harbor (lon, lat)
+end   = [-90.07, 29.95]    # New Orleans (lon, lat)
+waypoints = 20
+
+# Default fitness weights from bywind::config::SearchConfig (time = 1.0,
+# fuel = 10.0, land = 50.0). Pinned here so config changes upstream don't
+# silently shift profiling numbers.
+time_weight = 1.0
+fuel_weight = 10.0
+land_weight = 50.0
+
+# [search] left empty — uses bywind's compile-time defaults so this file
+# captures only the scenario-specific shape. Same setting for the large
+# scenario keeps PSO sizing equal across both.

@@ -1,0 +1,20 @@
+# Per-scenario baked grids — large binary blobs, deterministically
+# reproducible from the source grib2 via `bywind-cli search --save-baked`.
+# Don't commit them; the configs in this directory tell anyone how to
+# regenerate them.
+*.bk1
+*.bake
+*.baked
+
+# Per-scenario search-result JSONs. Reproducible from the configs +
+# baked grids; keeping them out of git avoids noise.
+*.json
+
+# PSO-tuning study artifacts: trial journal (`tune` subcommand's
+# JournalStorage output) and scratch baseline JSON. Reproducible by
+# re-running `bywind-cli tune` / `tune-trial` against the same configs.
+*.jsonl
+
+# Stderr capture from `bywind-cli tune` runs. Same logical status as
+# the `.jsonl` journal — reproducible study artifact, not source.
+*.log

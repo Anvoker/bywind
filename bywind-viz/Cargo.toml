@@ -1,0 +1,75 @@
+[package]
+name = "bywind-viz"
+description = "GUI editor and search visualiser for the `bywind` sailing-route optimiser."
+keywords = ["sailing", "routing", "gui", "wind", "egui"]
+categories = ["gui", "visualization", "science::geo"]
+readme = "README.md"
+# `build.rs` detects the optional `assets/sample_wind.wcav` and sets a
+# cfg flag that makes the binary embed it automatically. No cargo
+# feature needed — present file = bundled sample, missing file = no
+# bundle.
+build = "build.rs"
+include = [
+    "src/**/*.rs",
+    "build.rs",
+    "assets/**/*",
+    "index.html",
+    "Cargo.toml",
+    "README.md",
+    "LICENSE-MIT",
+    "LICENSE-APACHE",
+]
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+documentation = "https://docs.rs/bywind-viz"
+
+[package.metadata.docs.rs]
+all-features = true
+targets = ["x86_64-unknown-linux-gnu", "wasm32-unknown-unknown"]
+
+[dependencies]
+bywind = { path = "..", version = "0.1" }
+swarmkit.workspace = true
+swarmkit-sailing = { path = "../swarmkit-sailing", version = "0.1" }
+rand.workspace = true
+# Ear-clipping triangulator used by `coastlines.rs` to fill non-convex
+# landmass polygons. egui's built-in path fill is convex-only, so we
+# preprocess each polygon (with holes) into triangles ourselves.
+earcutr = "0.5"
+egui = "0.34.2"
+eframe = { version = "0.34.2", default-features = false, features = [
+    "accesskit",     # Make egui compatible with screen readers. NOTE: adds a lot of dependencies.
+    "default_fonts", # Embed the default egui fonts.
+    "glow",          # Use the glow rendering backend. Alternative: "wgpu".
+    "persistence",   # Enable restoring app state when restarting the app.
+    "wayland",       # To support Linux (and CI)
+    "x11",           # To support older Linux distributions (restores one of the default features)
+] }
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+# native:
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+env_logger = "0.11.10"
+rfd = "0.17.2"
+# `clock` feature pulls in `Utc::now`, used by the Fetch-from-AWS dialog
+# to default the end-of-window to the current time on first open. The
+# bare `chrono` workspace dep doesn't include `clock` so we add the
+# feature here at the consumer.
+chrono = { workspace = true, features = ["clock"] }
+
+# web:
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen-futures = "0.4.50"
+web-sys = "0.3.70"              # to access the DOM (to hide the loading text)
+getrandom = { version = "0.4.2", features = ["wasm_js"] }
+
+# Profiles and lints are defined at the workspace root (../Cargo.toml).
+[lints]
+workspace = true

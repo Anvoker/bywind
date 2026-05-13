@@ -1,0 +1,17 @@
+# Tuning route: transoceanic-pacific
+#
+# San Francisco → Tokyo, N = 40. Real transpacific shipping route. The
+# great-circle line crosses the antimeridian — the search relies on the
+# antimeridian-aware route_bounds + auto_bounds machinery to pick the
+# correct (westbound) hemisphere.
+#
+# Slot: HOLD-OUT.
+
+[run]
+start = [-122.42, 37.77]    # San Francisco
+end   = [139.77, 35.68]     # Tokyo Bay
+waypoints = 40
+
+time_weight = 1.0
+fuel_weight = 10.0
+land_weight = 50.0

@@ -1,0 +1,17 @@
+# Tuning route: mid-atlantic (synthetic)
+#
+# 30°N from 60°W to 25°W. ~3400 km open ocean, no land penalty
+# engaged — pure speed/fuel optimisation.
+#
+# Slot: HOLD-OUT. The mid-Pacific counterpart is in TRAINING, so the
+# study can answer "do tuned coefficients learned on one open-ocean
+# route generalise to another?".
+
+[run]
+start = [-60.0, 30.0]
+end   = [-25.0, 30.0]
+waypoints = 40
+
+time_weight = 1.0
+fuel_weight = 10.0
+land_weight = 50.0

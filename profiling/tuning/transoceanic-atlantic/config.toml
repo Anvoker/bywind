@@ -1,0 +1,22 @@
+# Tuning route: transoceanic-atlantic
+#
+# Lisbon → Buenos Aires, N = 40. ~10 000 km transatlantic + southern
+# hemisphere crossing. Tests both north and south Atlantic wind
+# patterns. Comfortably within the 30-day GFS wind horizon (~16 days
+# travel at the boat's typical PSO-chosen throttle).
+#
+# Replaces the original Lisbon → Mumbai (Cape detour, 12 000 km / ~40d
+# travel) which exceeded the 30-day wind data horizon and made
+# fitness measurements partly dependent on wind-clamping behaviour
+# past day 30.
+#
+# Slot: HOLD-OUT.
+
+[run]
+start = [-9.14, 38.72]      # Lisbon
+end   = [-58.37, -34.61]    # Buenos Aires (Río de la Plata)
+waypoints = 40
+
+time_weight = 1.0
+fuel_weight = 10.0
+land_weight = 50.0

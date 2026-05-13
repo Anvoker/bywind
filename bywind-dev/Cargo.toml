@@ -1,0 +1,12 @@
+[package]
+name = "bywind-dev"
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+bywind = { path = "..", version = "0.1" }
+
+[lints]
+workspace = true
