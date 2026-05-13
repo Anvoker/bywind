@@ -12,7 +12,7 @@ default-members = [".", "bywind-viz", "bywind-cli", "swarmkit-sailing"]
 # its own `[package]` so we don't repeat license / edition / etc. four times.
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 rust-version = "1.85"
 authors = ["Anvoker <anlogcode@pm.me>"]
