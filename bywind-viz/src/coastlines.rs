@@ -14,23 +14,6 @@
 
 use std::sync::OnceLock;
 
-use serde::Deserialize;
-
-/// Public-domain Natural Earth 1:50m landmass data, embedded at compile
-/// time so the app stays self-contained. ~1.6 MB; about 2× the linear
-/// detail of the 110m tier without ballooning the binary. Larger than
-/// the clippy default tolerance, but deliberately chosen for the
-/// visualisation quality.
-///
-/// The file lives in the parent `bywind` crate so the search-side
-/// landmass module ([`bywind::landmass`]) and this rendering layer
-/// stay in sync from a single source of truth.
-#[expect(
-    clippy::large_include_file,
-    reason = "deliberate map detail vs. binary-size trade"
-)]
-const LAND_GEOJSON: &[u8] = include_bytes!("../../assets/ne_50m_land.geojson");
-
 /// Threshold (degrees) above which an edge between two canonical
 /// longitudes is unambiguously an antimeridian wrap. **Outline polylines**
 /// crossing this threshold are split into separate sub-strips so the
@@ -82,8 +65,10 @@ pub(crate) struct Landmasses {
     pub(crate) outlines: Vec<Vec<egui::Pos2>>,
 }
 
-/// Lazy parse + triangulate: shared across all viz instances within
-/// the process, computed once on first use.
+/// Lazy triangulate: shared across all viz instances within the
+/// process, computed once on first use. The Natural Earth polygons
+/// themselves are parsed (once per process) by `bywind::landmass`;
+/// this cache holds the viz-side triangulation of them.
 static RAW: OnceLock<Vec<RawLandmass>> = OnceLock::new();
 
 /// Lazy build of [`Landmasses`] from the raw triangulated data —
@@ -91,23 +76,19 @@ static RAW: OnceLock<Vec<RawLandmass>> = OnceLock::new();
 /// first call and cached.
 static LANDMASSES: OnceLock<Landmasses> = OnceLock::new();
 
-/// Returns every landmass parsed from the embedded `GeoJSON`, with
-/// each polygon already triangulated into ear-clipped indices.
+/// Returns every landmass from `bywind`'s parsed Natural Earth data
+/// with each polygon already triangulated into ear-clipped indices.
+/// The viz layer reads through `bywind::landmass::raw_polygons` rather
+/// than re-parsing the GeoJSON so the search-side and rendering layer
+/// stay on a single source of truth (and so the published viz crate
+/// doesn't need its own copy of the GeoJSON asset).
 fn raw_landmasses() -> &'static [RawLandmass] {
-    RAW.get_or_init(
-        || match serde_json::from_slice::<FeatureCollection>(LAND_GEOJSON) {
-            Ok(fc) => fc
-                .features
-                .into_iter()
-                .flat_map(|f| f.geometry.into_polygons())
-                .map(triangulate_polygon)
-                .collect(),
-            Err(e) => {
-                log::error!("failed to parse bundled landmasses: {e}");
-                Vec::new()
-            }
-        },
-    )
+    RAW.get_or_init(|| {
+        bywind::landmass::raw_polygons()
+            .iter()
+            .map(|p| triangulate_polygon(p.rings.clone()))
+            .collect()
+    })
 }
 
 /// Convert a parsed polygon (rings as `(lon, lat)` pairs) into a
@@ -255,50 +236,6 @@ fn split_long_edges(strip: &[egui::Pos2]) -> Vec<Vec<egui::Pos2>> {
 }
 
 // ---- GeoJSON shape (only the bits we need) ----
-
-#[derive(Deserialize)]
-struct FeatureCollection {
-    features: Vec<Feature>,
-}
-
-#[derive(Deserialize)]
-struct Feature {
-    geometry: Geometry,
-}
-
-#[derive(Deserialize)]
-#[serde(tag = "type")]
-enum Geometry {
-    Polygon {
-        coordinates: Vec<Vec<[f64; 2]>>,
-    },
-    MultiPolygon {
-        coordinates: Vec<Vec<Vec<[f64; 2]>>>,
-    },
-    #[serde(other)]
-    Other,
-}
-
-impl Geometry {
-    /// Flatten a `Geometry` into a list of polygons (each polygon is a
-    /// list of rings). `MultiPolygon` returns multiple; `Polygon`
-    /// returns one; anything else returns none.
-    fn into_polygons(self) -> Vec<Vec<Vec<(f64, f64)>>> {
-        let convert = |ring: Vec<[f64; 2]>| -> Vec<(f64, f64)> {
-            ring.into_iter().map(|p| (p[0], p[1])).collect()
-        };
-        match self {
-            Self::Polygon { coordinates } => {
-                vec![coordinates.into_iter().map(convert).collect()]
-            }
-            Self::MultiPolygon { coordinates } => coordinates
-                .into_iter()
-                .map(|p| p.into_iter().map(convert).collect())
-                .collect(),
-            Self::Other => Vec::new(),
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {
