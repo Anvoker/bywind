@@ -79,9 +79,9 @@ static LANDMASSES: OnceLock<Landmasses> = OnceLock::new();
 /// Returns every landmass from `bywind`'s parsed Natural Earth data
 /// with each polygon already triangulated into ear-clipped indices.
 /// The viz layer reads through `bywind::landmass::raw_polygons` rather
-/// than re-parsing the GeoJSON so the search-side and rendering layer
+/// than re-parsing the `GeoJSON` so the search-side and rendering layer
 /// stay on a single source of truth (and so the published viz crate
-/// doesn't need its own copy of the GeoJSON asset).
+/// doesn't need its own copy of the `GeoJSON` asset).
 fn raw_landmasses() -> &'static [RawLandmass] {
     RAW.get_or_init(|| {
         bywind::landmass::raw_polygons()

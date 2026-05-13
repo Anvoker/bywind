@@ -43,7 +43,7 @@ pub struct BywindApp {
     /// build time; the decoded `TimedWindMap` slots into `wind_map` as
     /// soon as it's ready.
     #[serde(skip)]
-    pub(crate) bundled_sample_job: AsyncJob<Result<TimedWindMap, bywind::wind_av1::DecodeError>>,
+    pub(crate) bundled_sample_job: AsyncJob<Result<TimedWindMap, String>>,
 
     /// Background worker + log buffer for `File → Fetch from AWS…`.
     /// Streams `bywind::fetch::FetchProgress` events back via mpsc and
@@ -117,31 +117,27 @@ impl BywindApp {
         } else {
             Default::default()
         };
-        // Kick off the embedded-sample decoder on every cold start. The
-        // random wind map from `Default::default()` stays visible for
-        // the ~12 s it takes pure-Rust rav1d to chew through 720
-        // frames, then we slot the bundled sample in.
+        // Kick off the sample loader on every cold start. The random
+        // wind map from `Default::default()` stays visible while the
+        // worker runs — embed-decode (~12 s) or cache-decode is fast;
+        // first-launch download adds the network round-trip on top.
         #[cfg(not(target_arch = "wasm32"))]
-        if crate::bundled_sample::has_bundled_sample() {
-            app.start_bundled_sample_decode(&cc.egui_ctx);
-        }
+        app.start_bundled_sample_decode(&cc.egui_ctx);
         app
     }
 
-    /// Spawn a worker that decodes the embedded `wind_av1` sample
-    /// dataset. Replaces an already-running decode if one is queued so
-    /// the menu entry can re-trigger after the user has loaded other
-    /// data. No-op when `bundled-sample` is off or on wasm.
+    /// Spawn a worker that loads the `wind_av1` sample dataset —
+    /// going through embed → cache → download per `bundled_sample`
+    /// — then decodes the bytes into a `TimedWindMap`. Replaces an
+    /// already-running job so the menu entry can re-trigger after the
+    /// user has loaded other data. No-op on wasm.
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn start_bundled_sample_decode(&mut self, ctx: &egui::Context) {
-        if !crate::bundled_sample::has_bundled_sample() {
-            return;
-        }
-        let bytes = crate::bundled_sample::BUNDLED_WCAV;
         let ctx = ctx.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let result = bywind::wind_av1::decode(bytes);
+            let result = crate::bundled_sample::load_sample_bytes()
+                .and_then(|bytes| bywind::wind_av1::decode(&bytes[..]).map_err(|e| e.to_string()));
             drop(tx.send(result));
             ctx.request_repaint();
         });
@@ -432,7 +428,7 @@ impl eframe::App for BywindApp {
                     self.view.synthesized_frame = None;
                 }
                 Err(e) => {
-                    self.report_error(format!("failed to decode bundled wind sample: {e}",));
+                    self.report_error(format!("failed to load bundled wind sample: {e}"));
                 }
             }
         }

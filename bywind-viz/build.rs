@@ -4,10 +4,11 @@
 //! `assets/sample_wind.wcav` into place is all it takes to enable the
 //! embedded sample — no cargo feature toggle, no manifest edit.
 //!
-//! When the file is absent, the cfg stays unset, the embedded slice is
-//! empty, and the app falls back to the random-generated wind map. A
-//! plain `cargo build` works on fresh clones without the asset, which
-//! is the friction-free contributor experience we want.
+//! When the file is absent, the cfg stays unset and the embedded slice
+//! is empty. `bundled_sample.rs` then falls back to its cache + download
+//! path on native (the crates.io-published crate excludes the asset for
+//! size, so `cargo install` builds always take this path). Plain
+//! `cargo build` works on fresh clones with or without the asset.
 
 fn main() {
     // Rust 1.80 requires this declaration before `rustc-cfg` lines are

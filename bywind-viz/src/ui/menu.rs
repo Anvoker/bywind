@@ -113,25 +113,31 @@ impl BywindApp {
                                 }
                             }
                             ui.separator();
-                            // Reload the embedded `wind_av1` sample
-                            // dataset (the same one decoded at startup
-                            // when the `bundled-sample` cargo feature
-                            // is on). The button greys out for builds
-                            // without the sample so it doesn't lie.
+                            // Reload the `wind_av1` sample dataset.
+                            // For builds with the file embedded
+                            // (`build.rs` saw `assets/sample_wind.wcav`
+                            // at compile time) this is an in-binary
+                            // decode; for builds without it, the
+                            // sample is pulled from raw.githubusercontent
+                            // on first hit and cached locally for
+                            // subsequent reloads — see `bundled_sample`.
+                            let can_load = crate::bundled_sample::can_load_sample();
                             let has_bundled = crate::bundled_sample::has_bundled_sample();
                             let label = if self.bundled_sample_job.is_running() {
-                                "Reload Bundled Sample (decoding…)"
+                                "Reload Sample (working…)"
+                            } else if has_bundled {
+                                "Reload Sample"
                             } else {
-                                "Reload Bundled Sample"
+                                "Reload Sample (downloads if not cached)"
                             };
-                            let disabled_hint = if !has_bundled {
-                                "This build was compiled without a bundled sample dataset."
+                            let disabled_hint = if !can_load {
+                                "This build target doesn't support sample loading."
                             } else {
-                                "A bundled-sample decode is already running."
+                                "A sample load is already running."
                             };
                             if ui
                                 .add_enabled(
-                                    has_bundled && !self.bundled_sample_job.is_running(),
+                                    can_load && !self.bundled_sample_job.is_running(),
                                     egui::Button::new(label),
                                 )
                                 .on_disabled_hover_text(disabled_hint)

@@ -12,7 +12,18 @@ build = "build.rs"
 include = [
     "src/**/*.rs",
     "build.rs",
-    "assets/**/*",
+    # Icons, PWA manifest, service worker — small and useful. The
+    # 26 MB `assets/sample_wind.wcav` is deliberately excluded; it's
+    # over crates.io's 10 MiB limit and `bundled_sample.rs` falls
+    # back to downloading + caching it at first launch when not
+    # embedded.
+    "assets/favicon.ico",
+    "assets/icon-256.png",
+    "assets/icon-1024.png",
+    "assets/icon_ios_touch_192.png",
+    "assets/maskable_icon_x512.png",
+    "assets/manifest.json",
+    "assets/sw.js",
     "index.html",
     "Cargo.toml",
     "README.md",
@@ -63,6 +74,13 @@ rfd = "0.17.2"
 # bare `chrono` workspace dep doesn't include `clock` so we add the
 # feature here at the consumer.
 chrono = { workspace = true, features = ["clock"] }
+# Fallback path for `bundled_sample` when the 26 MB `sample_wind.wcav`
+# isn't embedded (i.e. cargo-install builds from crates.io). Pulls the
+# file from a version-pinned raw.githubusercontent.com URL on first
+# launch and caches it in the platform-appropriate cache dir for
+# subsequent launches.
+ureq = "3"
+directories = "6"
 
 # web:
 [target.'cfg(target_arch = "wasm32")'.dependencies]

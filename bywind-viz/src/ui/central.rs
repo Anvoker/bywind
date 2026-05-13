@@ -31,7 +31,7 @@ impl BywindApp {
                     .show(ui.ctx(), |ui| {
                         ui.horizontal(|ui| {
                             ui.spinner();
-                            ui.label("Decoding bundled wind sample…");
+                            ui.label("Loading bundled wind sample…");
                         });
                     });
             }
