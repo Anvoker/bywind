@@ -226,6 +226,194 @@ fn rasterise_mask(polygons: &[Polygon], width: usize, height: usize, cell_deg: f
 }
 
 // ============================================================================
+// Strait carve-outs
+// ============================================================================
+
+/// One narrow waterway that point-in-polygon rasterisation closes at any
+/// realistic [`SDF_RESOLUTION_DEG`]. Applied as a post-step on the binary
+/// land mask in [`LandmassGrid::build`] before the distance transform,
+/// so the SDF, gradient, A* sea grid, and PSO land-penalty all see the
+/// strait as open consistently — without this the mask, the SDF derived
+/// from it, and the search built on top would disagree.
+#[derive(Debug, Clone, Copy)]
+struct StraitCarveOut {
+    name: &'static str,
+    /// Channel centreline as `(lon°, lat°)` waypoints. Two points → one
+    /// segment; more → a chain (kinked straits like the Dardanelles).
+    waypoints: &'static [(f64, f64)],
+    /// Radius around the centreline, in cells. ≥1.0 guarantees an
+    /// 8-connected A* can walk through at the target resolution.
+    /// Expressed in cells (not metres or degrees) so the same value
+    /// scales naturally across resolutions.
+    clearance_cells: f64,
+}
+
+/// Known narrow waterways below the rasterisation resolution.
+///
+/// Artificial canals (Suez, Panama) are intentionally omitted: adding
+/// them would let the search shortcut continent-rounding routes.
+const STRAIT_CARVE_OUTS: &[StraitCarveOut] = &[
+    StraitCarveOut {
+        name: "Strait of Gibraltar",
+        waypoints: &[(-5.60, 35.95), (-5.30, 36.00)],
+        clearance_cells: 1.2,
+    },
+    // Dardanelles + Sea of Marmara chained into Bosporus. The Marmara
+    // is naturally sea but its coastal cells at 0.5° resolution can
+    // straddle the Asian / European shores, so a diagonal A* chord
+    // across the strait region clips ~14 km of land via bilinear-SDF
+    // interpolation at the cell corners. Chaining the carve-outs
+    // through the middle of the Marmara guarantees a continuously
+    // positive SDF corridor between Aegean and Black Sea.
+    StraitCarveOut {
+        name: "Dardanelles + Sea of Marmara",
+        waypoints: &[
+            (26.15, 40.00),
+            (26.40, 40.20),
+            (26.70, 40.42),
+            (27.50, 40.75),
+            (28.50, 40.92),
+            (28.97, 41.00),
+        ],
+        clearance_cells: 1.2,
+    },
+    StraitCarveOut {
+        name: "Bosporus",
+        waypoints: &[(28.97, 41.00), (29.07, 41.13), (29.15, 41.25)],
+        clearance_cells: 1.2,
+    },
+    StraitCarveOut {
+        name: "Bab-el-Mandeb",
+        // Northern southern-Red-Sea approach narrows to ~50 km between
+        // Eritrea and Yemen well before the strait proper, so the
+        // carve-out has to begin upstream or A* clips coastal cells on
+        // the diagonal approach.
+        waypoints: &[
+            (42.50, 14.50),
+            (42.80, 13.80),
+            (43.00, 13.20),
+            (43.30, 12.55),
+            (43.60, 12.50),
+        ],
+        clearance_cells: 1.2,
+    },
+    StraitCarveOut {
+        name: "Strait of Malacca",
+        waypoints: &[
+            (95.50, 5.70),
+            (98.50, 4.50),
+            (100.50, 3.00),
+            (102.50, 1.80),
+            (103.40, 1.30),
+        ],
+        clearance_cells: 1.2,
+    },
+    StraitCarveOut {
+        name: "Singapore Strait",
+        waypoints: &[(103.40, 1.20), (103.85, 1.20), (104.40, 1.20)],
+        clearance_cells: 1.2,
+    },
+];
+
+/// Apply every entry in [`STRAIT_CARVE_OUTS`] to a freshly rasterised
+/// land mask. Each strait clears the cells within `clearance_cells` of
+/// its centreline (capsule shape: segment + rounded endpoints).
+fn apply_strait_carve_outs(mask: &mut [bool], width: usize, height: usize, cell_deg: f64) {
+    for strait in STRAIT_CARVE_OUTS {
+        let pts = strait.waypoints;
+        log::debug!(
+            "carving strait {:?} ({} waypoints, clearance {} cells)",
+            strait.name,
+            pts.len(),
+            strait.clearance_cells,
+        );
+        if pts.len() == 1 {
+            carve_capsule(
+                mask,
+                width,
+                height,
+                cell_deg,
+                pts[0],
+                pts[0],
+                strait.clearance_cells,
+            );
+        } else {
+            for w in pts.windows(2) {
+                carve_capsule(
+                    mask,
+                    width,
+                    height,
+                    cell_deg,
+                    w[0],
+                    w[1],
+                    strait.clearance_cells,
+                );
+            }
+        }
+    }
+}
+
+/// Force every cell within `radius` cells of the segment `a` → `b` to
+/// sea, where `a` and `b` are `(lon°, lat°)`. Lon wraps via `rem_euclid`;
+/// lat clamps to grid bounds. A segment whose endpoints straddle the
+/// antimeridian is *not* handled — only Bering would need that, and it
+/// can be expressed as two adjacent carve-outs on either side of ±180.
+fn carve_capsule(
+    mask: &mut [bool],
+    width: usize,
+    height: usize,
+    cell_deg: f64,
+    a: (f64, f64),
+    b: (f64, f64),
+    radius: f64,
+) {
+    let to_cell = |lon: f64, lat: f64| -> (f64, f64) {
+        let cx = (lon + 180.0).rem_euclid(360.0) / cell_deg - 0.5;
+        let cy = (lat + 90.0) / cell_deg - 0.5;
+        (cx, cy)
+    };
+    let (ax, ay) = to_cell(a.0, a.1);
+    let (bx, by) = to_cell(b.0, b.1);
+
+    let lo_i = (ax.min(bx) - radius).floor() as isize;
+    let hi_i = (ax.max(bx) + radius).ceil() as isize;
+    let lo_j = (ay.min(by) - radius).floor().max(0.0) as isize;
+    let hi_j = (ay.max(by) + radius)
+        .ceil()
+        .min((height - 1) as f64) as isize;
+    let r2 = radius * radius;
+
+    for j in lo_j..=hi_j {
+        for ci in lo_i..=hi_i {
+            let i = ci.rem_euclid(width as isize) as usize;
+            let d2 = point_to_segment_dist_sq(i as f64, j as f64, ax, ay, bx, by);
+            if d2 <= r2 {
+                mask[j as usize * width + i] = false;
+            }
+        }
+    }
+}
+
+/// Squared distance from `(px, py)` to the segment `(ax, ay) → (bx, by)`.
+/// All coordinates are in fractional cell space. Falls back to point
+/// distance when the segment has zero length.
+fn point_to_segment_dist_sq(px: f64, py: f64, ax: f64, ay: f64, bx: f64, by: f64) -> f64 {
+    let dx = bx - ax;
+    let dy = by - ay;
+    let len_sq = dx.mul_add(dx, dy * dy);
+    let t = if len_sq < 1e-12 {
+        0.0
+    } else {
+        (((px - ax) * dx + (py - ay) * dy) / len_sq).clamp(0.0, 1.0)
+    };
+    let qx = ax + t * dx;
+    let qy = ay + t * dy;
+    let ex = px - qx;
+    let ey = py - qy;
+    ex.mul_add(ex, ey * ey)
+}
+
+// ============================================================================
 // 8SSEDT distance transform
 // ============================================================================
 
@@ -357,12 +545,15 @@ pub struct LandmassGrid {
 impl LandmassGrid {
     /// Build a grid from a polygon set at the requested cell size.
     /// Used by the default global builder and by tests with synthetic
-    /// shapes.
+    /// shapes. Applies [`STRAIT_CARVE_OUTS`] to the rasterised mask
+    /// before the distance transform so the SDF, gradient, A* sea grid,
+    /// and PSO land-penalty all see the listed straits as passable.
     pub fn build(polygons: &[Polygon], cell_deg: f64) -> Self {
         assert!(cell_deg > 0.0, "cell_deg must be positive, got {cell_deg}");
         let width = (360.0 / cell_deg).round() as usize;
         let height = (180.0 / cell_deg).round() as usize;
-        let mask = rasterise_mask(polygons, width, height, cell_deg);
+        let mut mask = rasterise_mask(polygons, width, height, cell_deg);
+        apply_strait_carve_outs(&mut mask, width, height, cell_deg);
         Self::from_mask(&mask, width, height, cell_deg)
     }
 
@@ -477,6 +668,16 @@ impl LandmassSource for LandmassGrid {
     fn signed_distance_m(&self, location: LatLon) -> f64 {
         let lon = wrap_lon_deg(location.lon);
         f64::from(self.bilinear(lon, location.lat, |i, j| self.sdf_m[j * self.width + i]))
+    }
+
+    /// Half a cell's worth of metres at the equator. Picks the substep
+    /// at which midpoint sampling in
+    /// [`swarmkit_sailing::dynamics::get_segment_land_metres`] can detect
+    /// the smallest land feature this grid actually resolves: any land
+    /// at least one cell wide guarantees a substep whose midpoint sits
+    /// inside a negative-SDF cell.
+    fn sampling_step_metres(&self) -> f64 {
+        self.cell_deg * METRES_PER_DEGREE * 0.5
     }
 
     fn gradient(&self, location: LatLon) -> TangentMetres {
@@ -1203,6 +1404,180 @@ mod tests {
         assert!(
             south_min_lat < -9.0,
             "south-biased path should detour below the bar, min lat = {south_min_lat}",
+        );
+    }
+
+    #[test]
+    fn carved_strait_waypoints_are_sea_in_default_grid() {
+        let grid = landmass_grid();
+        for strait in STRAIT_CARVE_OUTS {
+            for &(lon, lat) in strait.waypoints {
+                let sd = grid.signed_distance_m(LatLon::new(lon, lat));
+                assert!(
+                    sd >= 0.0,
+                    "{}: waypoint ({lon}, {lat}) classified as land (SDF = {sd} m)",
+                    strait.name,
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn aegean_to_black_sea_path_traverses_the_turkish_straits() {
+        // Without the Dardanelles + Bosporus carve-outs, A* would either
+        // fail (Black Sea fully enclosed) or fall back to the snap-to-sea
+        // ring radius and produce a degenerate path. With both straits
+        // open, a real polyline must exist.
+        let grid = landmass_grid();
+        let aegean = LatLon::new(25.0, 39.0);
+        let black_sea = LatLon::new(31.0, 42.5);
+        let bounds = RouteBounds::new(
+            aegean,
+            black_sea,
+            LonLatBbox::new(22.0, 35.0, 36.0, 46.0),
+        );
+        let path = grid
+            .find_sea_path(aegean, black_sea, &bounds, SeaPathBias::None)
+            .expect("Turkish straits should be open after carve-out");
+        let max_lon = path.iter().map(|p| p.lon).fold(f64::NEG_INFINITY, f64::max);
+        assert!(
+            (26.0..=32.0).contains(&max_lon),
+            "expected path to thread the Turkish straits, max lon = {max_lon}",
+        );
+        let total_land: f64 = path
+            .windows(2)
+            .map(|w| get_segment_land_metres(grid, w[0], w[1], bounds.step_distance_max))
+            .sum();
+        assert_eq!(
+            total_land, 0.0,
+            "polyline crossed {total_land:.0} m of land threading Dardanelles + Bosporus",
+        );
+    }
+
+    #[test]
+    fn sinai_scenario_unbiased_path_rounds_africa() {
+        // Coordinates from `grib-data/sinai-land-crossing.toml`. Both
+        // biased searches return `None` here — the path out of the Med
+        // must briefly travel north of `line_lat + slack` to clear the
+        // Sicily-Tunisia narrows, which the bias barrier blocks. The
+        // PSO init layer falls back to the unbiased polyline (see
+        // `swarmkit_sailing::init::compute_baselines`), so this test
+        // pins that the unbiased call succeeds and the polyline really
+        // does round Africa (min lat well south of the equator).
+        let grid = landmass_grid();
+        let origin = LatLon::new(12.894705772399902, 36.113094329833984);
+        let destination = LatLon::new(55.21006393432617, 10.023117065429688);
+        let bounds = RouteBounds::new(
+            origin,
+            destination,
+            LonLatBbox::new(-32.35, 69.85, -49.85, 52.35),
+        );
+        let polyline = grid
+            .find_sea_path(origin, destination, &bounds, SeaPathBias::None)
+            .expect("unbiased A* must succeed for the init fallback to work");
+        let min_lat = polyline.iter().map(|p| p.lat).fold(f64::INFINITY, f64::min);
+        assert!(
+            min_lat < -30.0,
+            "expected an around-Africa detour (min lat < -30°), got min lat = {min_lat}",
+        );
+        let total_land: f64 = polyline
+            .windows(2)
+            .map(|w| get_segment_land_metres(grid, w[0], w[1], bounds.step_distance_max))
+            .sum();
+        assert_eq!(
+            total_land, 0.0,
+            "around-Africa polyline crossed {total_land:.0} m of land",
+        );
+    }
+
+    #[test]
+    fn land_metres_detect_sinai_on_long_med_to_arabian_chord() {
+        // Regression: a Mediterranean → Arabian-Sea great-circle chord
+        // cuts across Egypt and Saudi Arabia. With a wind-sized substep
+        // (1% of a continental bbox ≈ 160 km), the old midpoint sampler
+        // only got 1 substep over a ~150 km PSO segment — its single
+        // midpoint frequently landed in a sea cell while the chord
+        // actually traversed hundreds of km of desert. The fix clamps
+        // the substep to the grid's native cell-scale so a chord like
+        // this is sampled densely enough to register the crossing.
+        let grid = landmass_grid();
+        let mediterranean = LatLon::new(12.89, 36.11);
+        let arabian_sea = LatLon::new(55.21, 10.02);
+        // The Sinai scenario's bbox-derived step (~160 km). Old code
+        // path would underreport with this value; the new clamp inside
+        // `get_segment_land_metres` kicks in regardless.
+        let coarse_step_m = 160_000.0;
+        let land_m =
+            swarmkit_sailing::get_segment_land_metres(grid, mediterranean, arabian_sea, coarse_step_m);
+        // The chord physically traverses roughly 2 500–3 500 km of land
+        // (Libya, Egypt, Saudi Arabia, Yemen) out of ~6 000 km total.
+        // Even a conservative lower bound of 1 000 km would have been
+        // missed by the old single-midpoint sampler on PSO-scale
+        // segments.
+        assert!(
+            land_m > 1_000_000.0,
+            "expected >1 000 km of land on the Med → Arabian-Sea chord, got {land_m} m",
+        );
+    }
+
+    #[test]
+    fn atlantic_to_mediterranean_path_traverses_gibraltar() {
+        let grid = landmass_grid();
+        let atlantic = LatLon::new(-7.0, 36.0);
+        let mediterranean = LatLon::new(-3.0, 36.0);
+        let bounds = RouteBounds::new(
+            atlantic,
+            mediterranean,
+            LonLatBbox::new(-10.0, 5.0, 33.0, 40.0),
+        );
+        let path = grid
+            .find_sea_path(atlantic, mediterranean, &bounds, SeaPathBias::None)
+            .expect("Gibraltar should be open after carve-out");
+        // Path should stay roughly along lat 36 — no detour around all
+        // of Africa.
+        let max_lat = path.iter().map(|p| p.lat).fold(f64::NEG_INFINITY, f64::max);
+        let min_lat = path.iter().map(|p| p.lat).fold(f64::INFINITY, f64::min);
+        assert!(
+            min_lat > 33.0 && max_lat < 40.0,
+            "Gibraltar path detoured (lat range {min_lat}..{max_lat})",
+        );
+        let total_land: f64 = path
+            .windows(2)
+            .map(|w| get_segment_land_metres(grid, w[0], w[1], bounds.step_distance_max))
+            .sum();
+        assert_eq!(
+            total_land, 0.0,
+            "Gibraltar polyline crossed {total_land:.0} m of land",
+        );
+    }
+
+    #[test]
+    fn red_sea_to_singapore_path_clears_bab_el_mandeb_malacca_and_singapore() {
+        // End-to-end traversal of three carve-outs: Bab-el-Mandeb (out of
+        // the Red Sea), Strait of Malacca (south past Sumatra/Malaysia),
+        // and Singapore Strait (east into the South China Sea). Every
+        // polyline chord must be sea — failure here indicates one of the
+        // strait carve-outs is too narrow or its centreline misplaced.
+        let grid = landmass_grid();
+        // Mid Red Sea between Egypt and Saudi Arabia (clearly offshore so
+        // the literal origin / destination vertices don't sit on land).
+        let red_sea = LatLon::new(37.5, 22.0);
+        let south_china_sea = LatLon::new(104.80, 1.20);
+        let bounds = RouteBounds::new(
+            red_sea,
+            south_china_sea,
+            LonLatBbox::new(30.0, 110.0, -15.0, 30.0),
+        );
+        let polyline = grid
+            .find_sea_path(red_sea, south_china_sea, &bounds, SeaPathBias::None)
+            .expect("Bab-el-Mandeb + Malacca + Singapore carve-outs should yield a sea path");
+        let total_land: f64 = polyline
+            .windows(2)
+            .map(|w| get_segment_land_metres(grid, w[0], w[1], bounds.step_distance_max))
+            .sum();
+        assert_eq!(
+            total_land, 0.0,
+            "Red Sea → Singapore polyline crossed {total_land:.0} m of land",
         );
     }
 

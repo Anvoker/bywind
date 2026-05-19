@@ -122,11 +122,16 @@ pub(crate) fn solve_mcr_01_cached<const N: usize>(
 /// Total ground distance (m) over land along the great-circle from
 /// `origin` to `destination`.
 ///
-/// Walks the route in substeps of `step_distance_max`, sampling the
-/// landmass source at each substep midpoint and accumulating only the
-/// portions that lie inside land. Mirrors the substep cadence of
-/// [`crate::Sailboat::get_travel_time`] so the two passes cover the
-/// same midpoints.
+/// Walks the route in substeps of at most
+/// `min(step_distance_max, landmass.sampling_step_metres())`, sampling
+/// the landmass source at each substep midpoint and accumulating only
+/// the portions that lie inside land. The clamp keeps land sampling
+/// dense enough to detect features at the landmass source's native
+/// resolution even when the caller's `step_distance_max` (sized for
+/// wind integration over the full bbox) is much coarser than a coast
+/// cell — a 6 000 km chord cutting across Sinai would otherwise be
+/// sampled at one or two midpoints, both of which can fall in sea
+/// cells while the chord traverses 250 km of land.
 ///
 /// Returns `f64::INFINITY` if the segment crosses a pole (bearing
 /// undefined), matching the boat integrator's failure mode for the same
@@ -142,7 +147,8 @@ pub fn get_segment_land_metres<LS: LandmassSource>(
     if total_distance <= 0.0 {
         return 0.0;
     }
-    let step_count = (total_distance / step_distance_max).ceil().max(1.0) as usize;
+    let effective_step = step_distance_max.min(landmass.sampling_step_metres());
+    let step_count = (total_distance / effective_step).ceil().max(1.0) as usize;
     let step_distance = total_distance / step_count as f64;
     let mut position = origin;
     let mut land_metres = 0.0;

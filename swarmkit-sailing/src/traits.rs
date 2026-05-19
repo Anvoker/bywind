@@ -104,6 +104,20 @@ pub trait LandmassSource: Sync {
         self.signed_distance_m(location) < 0.0
     }
 
+    /// Maximum substep length, in metres, that
+    /// [`crate::dynamics::get_segment_land_metres`] should use when
+    /// integrating land along a segment. Callers clamp their own
+    /// `step_distance_max` to this value so land sampling stays fine
+    /// enough to detect features at the source's native resolution,
+    /// regardless of how coarse the wind-integration substep is.
+    ///
+    /// Default `f64::INFINITY` imposes no cap — pre-existing behaviour
+    /// for sources without a meaningful resolution (notably
+    /// [`LandmassSourceDummy`]).
+    fn sampling_step_metres(&self) -> f64 {
+        f64::INFINITY
+    }
+
     /// Find a polyline of `(lon°, lat°)` points from `origin` to
     /// `destination` that stays over water, restricted to the search
     /// rectangle in `bounds`. The polyline starts at `origin` and ends

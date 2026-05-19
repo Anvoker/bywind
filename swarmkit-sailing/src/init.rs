@@ -256,6 +256,21 @@ where
 
 /// Active baselines for the next init pass. Falls back to a single
 /// straight-line baseline if every share is zero or every A* fails.
+///
+/// Each polyline baseline first asks A* for its biased path; if that
+/// returns `None` it falls back to the unbiased path. Bias is only
+/// useful when both topologies (north and south of an obstruction)
+/// genuinely exist as separate routes — for geographies where the
+/// bias barrier is tighter than the required detour (e.g. exiting a
+/// constrained basin like the Med westward to round Africa, where
+/// the path must briefly travel north of `line_lat + slack` to clear
+/// the Sicily-Tunisia narrows) biased A* returns `None`, and without
+/// this fallback the slot collapses to a straight-line seed instead
+/// of the topologically-correct sea route. Both fallbacks resolving
+/// to the same unbiased polyline is fine: 80 % of particles end up
+/// seeded on the actual sea route, with init's shape families plus
+/// the per-baseline shape kicks providing the diversity that the
+/// distinct-bias topologies would otherwise have given.
 fn compute_baselines<const N: usize, LS: LandmassSource>(
     bounds: &RouteBounds,
     landmass: &LS,
@@ -268,13 +283,15 @@ fn compute_baselines<const N: usize, LS: LandmassSource>(
             shares.straight_line.max(0.0),
         ));
     }
+    let find_with_fallback = |bias: SeaPathBias| -> Option<Vec<crate::spherical::LatLon>> {
+        landmass
+            .find_sea_path(bounds.origin, bounds.destination, bounds, bias)
+            .or_else(|| {
+                landmass.find_sea_path(bounds.origin, bounds.destination, bounds, SeaPathBias::None)
+            })
+    };
     if shares.polyline_north > 0.0
-        && let Some(poly) = landmass.find_sea_path(
-            bounds.origin,
-            bounds.destination,
-            bounds,
-            SeaPathBias::North,
-        )
+        && let Some(poly) = find_with_fallback(SeaPathBias::North)
     {
         out.push((
             PathBaseline::from_polyline(&poly, bounds, landmass),
@@ -282,12 +299,7 @@ fn compute_baselines<const N: usize, LS: LandmassSource>(
         ));
     }
     if shares.polyline_south > 0.0
-        && let Some(poly) = landmass.find_sea_path(
-            bounds.origin,
-            bounds.destination,
-            bounds,
-            SeaPathBias::South,
-        )
+        && let Some(poly) = find_with_fallback(SeaPathBias::South)
     {
         out.push((
             PathBaseline::from_polyline(&poly, bounds, landmass),
