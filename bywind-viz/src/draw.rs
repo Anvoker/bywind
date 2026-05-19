@@ -1,8 +1,9 @@
 use bywind::{
-    BakedWindMap, BenchmarkRoute, MapBounds, SearchWeights, SegmentMetrics, WeatherRow, WindMap,
-    compute_segment_metrics,
+    BakedWindMap, BenchmarkRoute, LonLatBbox, MapBounds, SearchWeights, SegmentMetrics, WeatherRow,
+    WindMap, compute_segment_metrics,
 };
 use swarmkit::Evolution;
+use swarmkit_sailing::spherical::LatLon;
 use swarmkit_sailing::{Boat, Path, RouteBounds, weighted_fitness};
 
 use crate::view::ViewTransform;
@@ -473,6 +474,226 @@ pub(crate) fn draw_sdf_overlay(
                     line_stroke,
                 );
             }
+        }
+    }
+}
+
+/// Two-tier variant of [`draw_sdf_overlay`]: paints the coarse global
+/// grid (skipping cells inside any fine patch's bbox) plus each fine
+/// [`bywind::landmass::FinePatch`]'s own cells. The result matches what
+/// `TwoTierLandmass::signed_distance_m` actually sees: fine resolution
+/// inside fine bboxes, coarse resolution everywhere else.
+pub(crate) fn draw_sdf_overlay_two_tier(
+    painter: &egui::Painter,
+    view: &ViewTransform,
+    two_tier: &bywind::landmass::TwoTierLandmass,
+) {
+    let fine_bboxes: Vec<LonLatBbox> = two_tier
+        .fine_patches()
+        .iter()
+        .map(bywind::landmass::FinePatch::bbox)
+        .collect();
+    paint_global_grid_skipping(painter, view, two_tier.coarse(), &fine_bboxes);
+    for patch in two_tier.fine_patches() {
+        paint_fine_patch(painter, view, patch);
+    }
+}
+
+/// Shared with [`draw_sdf_overlay`]: same painting pass, but with a list
+/// of bboxes whose cells are skipped (used by the two-tier overlay to
+/// leave coarse cells uncovered in fine-patch regions so the fine cells
+/// can be painted on top without translucent blending).
+fn paint_global_grid_skipping(
+    painter: &egui::Painter,
+    view: &ViewTransform,
+    grid: &bywind::landmass::LandmassGrid,
+    skip_bboxes: &[LonLatBbox],
+) {
+    let cell_deg = grid.cell_deg();
+    let (width, height) = grid.dims();
+    let clip = painter.clip_rect();
+    let world_width_px = world_width_pixels(view);
+
+    let origin_px = view.map_to_screen(egui::Pos2::new(0.0, 0.0));
+    let unit_px = view.map_to_screen(egui::Pos2::new(cell_deg as f32, cell_deg as f32));
+    let cell_w_px = unit_px.x - origin_px.x;
+    let cell_h_px = origin_px.y - unit_px.y;
+    if cell_w_px.abs() < 0.5 || cell_h_px.abs() < 0.5 {
+        return;
+    }
+    let anchor = view.map_to_screen(egui::Pos2::new(-180.0, -90.0));
+    let i_from_x = |x: f32| ((x - anchor.x) / cell_w_px).floor() as isize;
+    let j_from_y = |y: f32| ((anchor.y - y) / cell_h_px).floor() as isize;
+    let j_lo = j_from_y(clip.max.y + cell_h_px).max(0) as usize;
+    let j_hi = ((j_from_y(clip.min.y - cell_h_px) + 1) as usize).min(height);
+    if j_lo >= j_hi {
+        return;
+    }
+
+    let sea_color = egui::Color32::from_rgba_premultiplied(60, 120, 200, 70);
+    let land_color = egui::Color32::from_rgba_premultiplied(200, 80, 60, 70);
+    let draw_grid_lines = cell_w_px >= 6.0 && cell_h_px >= 6.0;
+    let line_stroke = egui::Stroke::new(
+        0.5,
+        egui::Color32::from_rgba_premultiplied(0, 0, 0, 90),
+    );
+    let mut mesh = egui::Mesh::default();
+
+    for shift in shadow_offsets(world_width_px) {
+        if !shift.is_finite() {
+            continue;
+        }
+        mesh.vertices.clear();
+        mesh.indices.clear();
+        let i_lo = i_from_x(clip.min.x - shift - cell_w_px).max(0) as usize;
+        let i_hi = ((i_from_x(clip.max.x - shift + cell_w_px) + 1) as usize).min(width);
+        if i_lo >= i_hi {
+            continue;
+        }
+        for j in j_lo..j_hi {
+            let y_bot = anchor.y - (j as f32) * cell_h_px;
+            let y_top = y_bot - cell_h_px;
+            if y_bot < clip.min.y - 2.0 || y_top > clip.max.y + 2.0 {
+                continue;
+            }
+            let cell_lat = -90.0 + (j as f64 + 0.5) * cell_deg;
+            for i in i_lo..i_hi {
+                let cell_lon = -180.0 + (i as f64 + 0.5) * cell_deg;
+                let cell_centre = LatLon::new(cell_lon, cell_lat);
+                if skip_bboxes.iter().any(|bb| bb.contains(cell_centre)) {
+                    continue;
+                }
+                let x_left = anchor.x + (i as f32) * cell_w_px + shift;
+                let x_right = x_left + cell_w_px;
+                let sdf = grid.sdf_at_cell(i, j);
+                let color = if sdf >= 0.0 { sea_color } else { land_color };
+                let idx = mesh.vertices.len() as u32;
+                mesh.colored_vertex(egui::Pos2::new(x_left, y_top), color);
+                mesh.colored_vertex(egui::Pos2::new(x_right, y_top), color);
+                mesh.colored_vertex(egui::Pos2::new(x_right, y_bot), color);
+                mesh.colored_vertex(egui::Pos2::new(x_left, y_bot), color);
+                mesh.add_triangle(idx, idx + 1, idx + 2);
+                mesh.add_triangle(idx, idx + 2, idx + 3);
+            }
+        }
+        if !mesh.vertices.is_empty() {
+            painter.add(egui::Shape::mesh(std::mem::take(&mut mesh)));
+        }
+        if draw_grid_lines {
+            // Coarse grid lines run across the full visible range even
+            // through fine-patch regions; the fine patch's painted cells
+            // then sit on top and visually obscure them. Skipping the
+            // coarse lines just inside fine bboxes would leave a ragged
+            // boundary between the two grids that reads worse than the
+            // mild double-grid does.
+            let x_left = anchor.x + (i_lo as f32) * cell_w_px + shift;
+            let x_right = anchor.x + (i_hi as f32) * cell_w_px + shift;
+            let y_top_line = anchor.y - (j_hi as f32) * cell_h_px;
+            let y_bot_line = anchor.y - (j_lo as f32) * cell_h_px;
+            for i in i_lo..=i_hi {
+                let x = anchor.x + (i as f32) * cell_w_px + shift;
+                painter.line_segment(
+                    [egui::Pos2::new(x, y_top_line), egui::Pos2::new(x, y_bot_line)],
+                    line_stroke,
+                );
+            }
+            for j in j_lo..=j_hi {
+                let y = anchor.y - (j as f32) * cell_h_px;
+                painter.line_segment(
+                    [egui::Pos2::new(x_left, y), egui::Pos2::new(x_right, y)],
+                    line_stroke,
+                );
+            }
+        }
+    }
+}
+
+/// Paint a single [`bywind::landmass::FinePatch`]'s visible cells.
+/// Patches are bounded rectangles with no antimeridian wrap, so the
+/// shadow-tile machinery the global grid needs doesn't apply.
+fn paint_fine_patch(
+    painter: &egui::Painter,
+    view: &ViewTransform,
+    patch: &bywind::landmass::FinePatch,
+) {
+    let cell_deg = patch.cell_deg();
+    let (width, height) = patch.dims();
+    let bbox = patch.bbox();
+    let clip = painter.clip_rect();
+
+    let origin_px = view.map_to_screen(egui::Pos2::new(0.0, 0.0));
+    let unit_px = view.map_to_screen(egui::Pos2::new(cell_deg as f32, cell_deg as f32));
+    let cell_w_px = unit_px.x - origin_px.x;
+    let cell_h_px = origin_px.y - unit_px.y;
+    if cell_w_px.abs() < 0.5 || cell_h_px.abs() < 0.5 {
+        return;
+    }
+    let anchor = view.map_to_screen(egui::Pos2::new(bbox.lon_min as f32, bbox.lat_min as f32));
+    let i_from_x = |x: f32| ((x - anchor.x) / cell_w_px).floor() as isize;
+    let j_from_y = |y: f32| ((anchor.y - y) / cell_h_px).floor() as isize;
+    let j_lo = j_from_y(clip.max.y + cell_h_px).max(0) as usize;
+    let j_hi = ((j_from_y(clip.min.y - cell_h_px) + 1) as usize).min(height);
+    let i_lo = i_from_x(clip.min.x - cell_w_px).max(0) as usize;
+    let i_hi = ((i_from_x(clip.max.x + cell_w_px) + 1) as usize).min(width);
+    if j_lo >= j_hi || i_lo >= i_hi {
+        return;
+    }
+
+    // Slightly more saturated alpha than the coarse pass so fine patches
+    // visually pop where the coarse cells underneath would have shown
+    // through if either had been painted at the same location.
+    let sea_color = egui::Color32::from_rgba_premultiplied(60, 120, 200, 100);
+    let land_color = egui::Color32::from_rgba_premultiplied(200, 80, 60, 100);
+    let draw_grid_lines = cell_w_px >= 4.0 && cell_h_px >= 4.0;
+    // Slightly stronger stroke than coarse so the fine grid is clearly
+    // distinguishable when the two zoom levels meet.
+    let line_stroke = egui::Stroke::new(
+        0.5,
+        egui::Color32::from_rgba_premultiplied(0, 0, 0, 140),
+    );
+
+    let mut mesh = egui::Mesh::default();
+    for j in j_lo..j_hi {
+        let y_bot = anchor.y - (j as f32) * cell_h_px;
+        let y_top = y_bot - cell_h_px;
+        if y_bot < clip.min.y - 2.0 || y_top > clip.max.y + 2.0 {
+            continue;
+        }
+        for i in i_lo..i_hi {
+            let x_left = anchor.x + (i as f32) * cell_w_px;
+            let x_right = x_left + cell_w_px;
+            let sdf = patch.sdf_at_cell(i, j);
+            let color = if sdf >= 0.0 { sea_color } else { land_color };
+            let idx = mesh.vertices.len() as u32;
+            mesh.colored_vertex(egui::Pos2::new(x_left, y_top), color);
+            mesh.colored_vertex(egui::Pos2::new(x_right, y_top), color);
+            mesh.colored_vertex(egui::Pos2::new(x_right, y_bot), color);
+            mesh.colored_vertex(egui::Pos2::new(x_left, y_bot), color);
+            mesh.add_triangle(idx, idx + 1, idx + 2);
+            mesh.add_triangle(idx, idx + 2, idx + 3);
+        }
+    }
+    if !mesh.vertices.is_empty() {
+        painter.add(egui::Shape::mesh(mesh));
+    }
+    if draw_grid_lines {
+        let x_left = anchor.x + (i_lo as f32) * cell_w_px;
+        let x_right = anchor.x + (i_hi as f32) * cell_w_px;
+        let y_top_line = anchor.y - (j_hi as f32) * cell_h_px;
+        let y_bot_line = anchor.y - (j_lo as f32) * cell_h_px;
+        for i in i_lo..=i_hi {
+            let x = anchor.x + (i as f32) * cell_w_px;
+            painter.line_segment(
+                [egui::Pos2::new(x, y_top_line), egui::Pos2::new(x, y_bot_line)],
+                line_stroke,
+            );
+        }
+        for j in j_lo..=j_hi {
+            let y = anchor.y - (j as f32) * cell_h_px;
+            painter.line_segment(
+                [egui::Pos2::new(x_left, y), egui::Pos2::new(x_right, y)],
+                line_stroke,
+            );
         }
     }
 }

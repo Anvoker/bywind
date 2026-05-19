@@ -29,7 +29,7 @@ use std::sync::{Mutex, OnceLock};
 
 use serde::Deserialize;
 use swarmkit_sailing::spherical::{
-    LatLon, METRES_PER_DEGREE, TangentMetres, haversine, signed_lon_delta, wrap_lon_deg,
+    LatLon, LonLatBbox, METRES_PER_DEGREE, TangentMetres, haversine, signed_lon_delta, wrap_lon_deg,
 };
 use swarmkit_sailing::{LandmassSource, RouteBounds, SeaPathBias};
 
@@ -198,24 +198,39 @@ fn point_in_ring(lon: f64, lat: f64, ring: &[(f64, f64)]) -> bool {
 /// Rasterise the polygon set into a binary land mask. Cells whose
 /// centres fall inside any polygon are marked land. Bbox prefilter so
 /// each polygon only tests cells in its lon/lat span.
-fn rasterise_mask(polygons: &[Polygon], width: usize, height: usize, cell_deg: f64) -> Vec<bool> {
+///
+/// Cell `i, j` has centre `(origin_lon + (i + 0.5) * cell_deg,
+/// origin_lat + (j + 0.5) * cell_deg)`. The global mask uses
+/// `MaskFrame::global` (origin `(-180°, -90°)`); fine patches use their
+/// bbox's lower-left corner as the origin.
+fn rasterise_mask(polygons: &[Polygon], frame: MaskFrame) -> Vec<bool> {
+    let MaskFrame {
+        width,
+        height,
+        cell_deg,
+        origin_lon,
+        origin_lat,
+        ..
+    } = frame;
     let mut mask = vec![false; width * height];
     for poly in polygons {
         let (lon_min, lon_max, lat_min, lat_max) = polygon_bbox(poly);
-        // Cell coordinates: cell i has centre lon = -180 + (i + 0.5) * cell_deg.
-        // Inverting: the lowest cell whose centre is >= lon_min is
-        // ceil((lon_min + 180) / cell_deg - 0.5).
-        let i_lo = (((lon_min + 180.0) / cell_deg - 0.5).ceil() as isize).max(0) as usize;
-        let i_hi = (((lon_max + 180.0) / cell_deg - 0.5).floor() as isize + 1).max(0) as usize;
-        let j_lo = (((lat_min + 90.0) / cell_deg - 0.5).ceil() as isize).max(0) as usize;
-        let j_hi = (((lat_max + 90.0) / cell_deg - 0.5).floor() as isize + 1).max(0) as usize;
+        // Inverting `centre_lon = origin_lon + (i + 0.5) * cell_deg`,
+        // the lowest cell whose centre is `>= lon_min` is
+        // `ceil((lon_min - origin_lon) / cell_deg - 0.5)`. Symmetric for
+        // lat. Out-of-frame polygons get zero-length loop bounds via the
+        // `max(0) / min(width)` clamps.
+        let i_lo = (((lon_min - origin_lon) / cell_deg - 0.5).ceil() as isize).max(0) as usize;
+        let i_hi = (((lon_max - origin_lon) / cell_deg - 0.5).floor() as isize + 1).max(0) as usize;
+        let j_lo = (((lat_min - origin_lat) / cell_deg - 0.5).ceil() as isize).max(0) as usize;
+        let j_hi = (((lat_max - origin_lat) / cell_deg - 0.5).floor() as isize + 1).max(0) as usize;
         let i_hi = i_hi.min(width);
         let j_hi = j_hi.min(height);
 
         for j in j_lo..j_hi {
-            let lat = -90.0 + (j as f64 + 0.5) * cell_deg;
+            let lat = origin_lat + (j as f64 + 0.5) * cell_deg;
             for i in i_lo..i_hi {
-                let lon = -180.0 + (i as f64 + 0.5) * cell_deg;
+                let lon = origin_lon + (i as f64 + 0.5) * cell_deg;
                 if !mask[j * width + i] && point_in_polygon(lon, lat, poly) {
                     mask[j * width + i] = true;
                 }
@@ -246,6 +261,39 @@ struct StraitCarveOut {
     /// Expressed in cells (not metres or degrees) so the same value
     /// scales naturally across resolutions.
     clearance_cells: f64,
+}
+
+impl StraitCarveOut {
+    /// Bounding box enclosing every waypoint. Useful for sizing fine
+    /// SDF patches whose bbox should cover the strait's region.
+    /// Returns a degenerate (zero-extent) bbox at the single point for
+    /// one-waypoint entries.
+    fn waypoint_bbox(&self) -> LonLatBbox {
+        let mut lon_min = f64::INFINITY;
+        let mut lon_max = f64::NEG_INFINITY;
+        let mut lat_min = f64::INFINITY;
+        let mut lat_max = f64::NEG_INFINITY;
+        for &(lon, lat) in self.waypoints {
+            lon_min = lon_min.min(lon);
+            lon_max = lon_max.max(lon);
+            lat_min = lat_min.min(lat);
+            lat_max = lat_max.max(lat);
+        }
+        LonLatBbox::new(lon_min, lon_max, lat_min, lat_max)
+    }
+
+    /// [`Self::waypoint_bbox`] expanded uniformly by `padding_deg` on
+    /// each side. Latitude is not clamped; downstream patch builders
+    /// clamp before allocating cells.
+    fn padded_bbox(&self, padding_deg: f64) -> LonLatBbox {
+        let b = self.waypoint_bbox();
+        LonLatBbox::new(
+            b.lon_min - padding_deg,
+            b.lon_max + padding_deg,
+            b.lat_min - padding_deg,
+            b.lat_max + padding_deg,
+        )
+    }
 }
 
 /// Known narrow waterways below the rasterisation resolution.
@@ -315,10 +363,46 @@ const STRAIT_CARVE_OUTS: &[StraitCarveOut] = &[
     },
 ];
 
+/// Geometry of the mask buffer a carve-out is applied to. Separated from
+/// the carve-out itself so the same `apply_strait_carve_outs` /
+/// `carve_capsule` code drives both the global landmass grid (origin
+/// `(-180°, -90°)`, `lon_wrap = true`) and bounded fine patches
+/// (origin = patch's lower-left, `lon_wrap = false`).
+#[derive(Copy, Clone, Debug)]
+struct MaskFrame {
+    width: usize,
+    height: usize,
+    cell_deg: f64,
+    origin_lon: f64,
+    origin_lat: f64,
+    lon_wrap: bool,
+}
+
+impl MaskFrame {
+    /// Frame for the global rasterisation. Origin sits at the
+    /// `(-180°, -90°)` corner; lon wraps modulo width.
+    fn global(width: usize, height: usize, cell_deg: f64) -> Self {
+        Self {
+            width,
+            height,
+            cell_deg,
+            origin_lon: -180.0,
+            origin_lat: -90.0,
+            lon_wrap: true,
+        }
+    }
+}
+
 /// Apply every entry in [`STRAIT_CARVE_OUTS`] to a freshly rasterised
 /// land mask. Each strait clears the cells within `clearance_cells` of
 /// its centreline (capsule shape: segment + rounded endpoints).
-fn apply_strait_carve_outs(mask: &mut [bool], width: usize, height: usize, cell_deg: f64) {
+///
+/// Works on both the global grid and bounded fine patches via the
+/// [`MaskFrame`] parameter. Carve-outs whose centrelines fall entirely
+/// outside the frame still iterate but the per-cell distance test
+/// silently drops them — cheap enough at the current `STRAIT_CARVE_OUTS`
+/// size that a tube-bbox prefilter isn't worth the code.
+fn apply_strait_carve_outs(mask: &mut [bool], frame: MaskFrame) {
     for strait in STRAIT_CARVE_OUTS {
         let pts = strait.waypoints;
         log::debug!(
@@ -328,48 +412,44 @@ fn apply_strait_carve_outs(mask: &mut [bool], width: usize, height: usize, cell_
             strait.clearance_cells,
         );
         if pts.len() == 1 {
-            carve_capsule(
-                mask,
-                width,
-                height,
-                cell_deg,
-                pts[0],
-                pts[0],
-                strait.clearance_cells,
-            );
+            carve_capsule(mask, frame, pts[0], pts[0], strait.clearance_cells);
         } else {
             for w in pts.windows(2) {
-                carve_capsule(
-                    mask,
-                    width,
-                    height,
-                    cell_deg,
-                    w[0],
-                    w[1],
-                    strait.clearance_cells,
-                );
+                carve_capsule(mask, frame, w[0], w[1], strait.clearance_cells);
             }
         }
     }
 }
 
 /// Force every cell within `radius` cells of the segment `a` → `b` to
-/// sea, where `a` and `b` are `(lon°, lat°)`. Lon wraps via `rem_euclid`;
-/// lat clamps to grid bounds. A segment whose endpoints straddle the
-/// antimeridian is *not* handled — only Bering would need that, and it
-/// can be expressed as two adjacent carve-outs on either side of ±180.
+/// sea, where `a` and `b` are `(lon°, lat°)`. Lon wraps modulo the
+/// frame's width when `frame.lon_wrap` is true (global grid); otherwise
+/// out-of-range columns are silently dropped (bounded patch). Lat clamps
+/// in both cases. A segment whose endpoints straddle the antimeridian is
+/// not handled — only Bering would need that, and it can be expressed as
+/// two adjacent carve-outs on either side of ±180.
 fn carve_capsule(
     mask: &mut [bool],
-    width: usize,
-    height: usize,
-    cell_deg: f64,
+    frame: MaskFrame,
     a: (f64, f64),
     b: (f64, f64),
     radius: f64,
 ) {
+    let MaskFrame {
+        width,
+        height,
+        cell_deg,
+        origin_lon,
+        origin_lat,
+        lon_wrap,
+    } = frame;
     let to_cell = |lon: f64, lat: f64| -> (f64, f64) {
-        let cx = (lon + 180.0).rem_euclid(360.0) / cell_deg - 0.5;
-        let cy = (lat + 90.0) / cell_deg - 0.5;
+        let cx = if lon_wrap {
+            (lon - origin_lon).rem_euclid(360.0) / cell_deg - 0.5
+        } else {
+            (lon - origin_lon) / cell_deg - 0.5
+        };
+        let cy = (lat - origin_lat) / cell_deg - 0.5;
         (cx, cy)
     };
     let (ax, ay) = to_cell(a.0, a.1);
@@ -385,7 +465,13 @@ fn carve_capsule(
 
     for j in lo_j..=hi_j {
         for ci in lo_i..=hi_i {
-            let i = ci.rem_euclid(width as isize) as usize;
+            let i = if lon_wrap {
+                ci.rem_euclid(width as isize) as usize
+            } else if ci < 0 || (ci as usize) >= width {
+                continue;
+            } else {
+                ci as usize
+            };
             let d2 = point_to_segment_dist_sq(i as f64, j as f64, ax, ay, bx, by);
             if d2 <= r2 {
                 mask[j as usize * width + i] = false;
@@ -552,8 +638,9 @@ impl LandmassGrid {
         assert!(cell_deg > 0.0, "cell_deg must be positive, got {cell_deg}");
         let width = (360.0 / cell_deg).round() as usize;
         let height = (180.0 / cell_deg).round() as usize;
-        let mut mask = rasterise_mask(polygons, width, height, cell_deg);
-        apply_strait_carve_outs(&mut mask, width, height, cell_deg);
+        let frame = MaskFrame::global(width, height, cell_deg);
+        let mut mask = rasterise_mask(polygons, frame);
+        apply_strait_carve_outs(&mut mask, frame);
         Self::from_mask(&mask, width, height, cell_deg)
     }
 
@@ -561,6 +648,7 @@ impl LandmassGrid {
     /// for tests; production code goes through [`build`](Self::build).
     pub fn from_mask(mask: &[bool], width: usize, height: usize, cell_deg: f64) -> Self {
         assert_eq!(mask.len(), width * height, "mask length mismatch");
+        let frame = MaskFrame::global(width, height, cell_deg);
         // Distance to nearest land for water cells, and to nearest water
         // for land cells. Two passes; we'll combine into a signed value.
         let to_land = distance_transform(mask, width, height, true);
@@ -583,7 +671,7 @@ impl LandmassGrid {
             sdf_m[idx] = if m { -metres as f32 } else { metres as f32 };
         }
 
-        let grad_en = compute_gradient(&sdf_m, width, height, cell_deg);
+        let grad_en = compute_gradient(&sdf_m, frame);
 
         Self {
             width,
@@ -715,15 +803,445 @@ impl LandmassSource for LandmassGrid {
     }
 }
 
+// ============================================================================
+// FinePatch: bounded high-resolution SDF tile
+// ============================================================================
+
+/// Rectangular SDF + gradient tile at a fine resolution, covering a
+/// caller-chosen bbox.
+///
+/// Used as the fine tier in [`TwoTierLandmass`] so strait carve-out
+/// tubes inside the patch are narrower (proportional to the smaller
+/// cell size) than they are on the coarse global grid.
+///
+/// Indexed relative to `bbox.lon_min / bbox.lat_min` (no antimeridian
+/// wrap — patches are local rectangles). The bilinear lookup assumes
+/// the query point sits inside `bbox`; callers must filter via
+/// `bbox.contains(p)` before consulting a patch.
+///
+/// SDF values near the patch edge are biased low (the in-patch distance
+/// transform can't see land outside the patch, so a sea cell near the
+/// boundary may underestimate its true distance to land). Patches built
+/// from the [`StraitCarveOut::padded_bbox`] helper have a configurable
+/// padding so the search-relevant cells sit well inside the patch
+/// interior and avoid edge bias.
+pub struct FinePatch {
+    bbox: LonLatBbox,
+    cell_deg: f64,
+    width: usize,
+    height: usize,
+    sdf_m: Vec<f32>,
+    grad_en: Vec<(f32, f32)>,
+}
+
+impl FinePatch {
+    /// Build a fine-resolution patch over `bbox` at `cell_deg`.
+    /// Rasterises any polygons that intersect the bbox, applies the
+    /// global [`STRAIT_CARVE_OUTS`] (those whose tubes touch the patch
+    /// will write into the mask via the per-cell distance test inside
+    /// `carve_capsule`; the rest no-op), runs the 8SSEDT distance
+    /// transform within the patch, and computes the outward gradient.
+    pub fn build(polygons: &[Polygon], bbox: LonLatBbox, cell_deg: f64) -> Self {
+        assert!(cell_deg > 0.0, "cell_deg must be positive, got {cell_deg}");
+        assert!(
+            bbox.is_non_degenerate(),
+            "patch bbox must be non-degenerate, got {bbox:?}",
+        );
+        let lon_extent = bbox.lon_extent();
+        let lat_extent = bbox.lat_extent();
+        let width = (lon_extent / cell_deg).ceil() as usize;
+        let height = (lat_extent / cell_deg).ceil() as usize;
+        let frame = MaskFrame {
+            width,
+            height,
+            cell_deg,
+            origin_lon: bbox.lon_min,
+            origin_lat: bbox.lat_min,
+            lon_wrap: false,
+        };
+
+        let mut mask = rasterise_mask(polygons, frame);
+        apply_strait_carve_outs(&mut mask, frame);
+
+        let to_land = distance_transform(&mask, width, height, false);
+        let inverted: Vec<bool> = mask.iter().map(|&b| !b).collect();
+        let to_water = distance_transform(&inverted, width, height, false);
+        let cell_m = cell_deg * METRES_PER_DEGREE;
+        let mut sdf_m = vec![0.0f32; width * height];
+        for (idx, &m) in mask.iter().enumerate() {
+            let unsigned = if m {
+                (dist_sq(to_water[idx]) as f64).sqrt()
+            } else {
+                (dist_sq(to_land[idx]) as f64).sqrt()
+            };
+            let metres = unsigned * cell_m;
+            sdf_m[idx] = if m { -metres as f32 } else { metres as f32 };
+        }
+        let grad_en = compute_gradient(&sdf_m, frame);
+
+        Self {
+            bbox,
+            cell_deg,
+            width,
+            height,
+            sdf_m,
+            grad_en,
+        }
+    }
+
+    /// Geographic bbox covered by this patch.
+    pub fn bbox(&self) -> LonLatBbox {
+        self.bbox
+    }
+
+    /// Cell size in degrees.
+    pub fn cell_deg(&self) -> f64 {
+        self.cell_deg
+    }
+
+    /// Grid dimensions in cells: `(width, height)`.
+    pub fn dims(&self) -> (usize, usize) {
+        (self.width, self.height)
+    }
+
+    /// Signed distance at cell `(i, j)`. Out-of-range panics.
+    pub fn sdf_at_cell(&self, i: usize, j: usize) -> f32 {
+        self.sdf_m[j * self.width + i]
+    }
+
+    /// Centre `(lon°, lat°)` of cell `(i, j)`.
+    pub fn cell_centre(&self, i: usize, j: usize) -> LatLon {
+        LatLon::new(
+            self.bbox.lon_min + (i as f64 + 0.5) * self.cell_deg,
+            self.bbox.lat_min + (j as f64 + 0.5) * self.cell_deg,
+        )
+    }
+
+    /// Snap a geographic `(lon°, lat°)` to its containing cell index
+    /// `(i, j)`. Clamps to the patch's edge cells; callers must already
+    /// have verified `bbox.contains(location)` before calling.
+    fn cell_index_of(&self, location: LatLon) -> (usize, usize) {
+        let fi = ((location.lon - self.bbox.lon_min) / self.cell_deg)
+            .floor()
+            .clamp(0.0, (self.width.saturating_sub(1)) as f64);
+        let fj = ((location.lat - self.bbox.lat_min) / self.cell_deg)
+            .floor()
+            .clamp(0.0, (self.height.saturating_sub(1)) as f64);
+        (fi as usize, fj as usize)
+    }
+
+    /// `true` iff cell `(i, j)` is sea (positive SDF).
+    fn is_sea_cell(&self, i: usize, j: usize) -> bool {
+        self.sdf_m[j * self.width + i] >= 0.0
+    }
+
+    /// Bilinear-interpolated SDF at `(lon°, lat°)`. Caller must ensure
+    /// the point lies in `bbox` — out-of-bbox queries clamp to the
+    /// patch's nearest edge cell and the returned value is meaningless.
+    pub fn signed_distance_m(&self, location: LatLon) -> f64 {
+        f64::from(self.bilinear(location.lon, location.lat, |i, j| {
+            self.sdf_m[j * self.width + i]
+        }))
+    }
+
+    /// Bilinear-interpolated outward gradient at `(lon°, lat°)`. Same
+    /// in-bbox precondition as [`Self::signed_distance_m`].
+    pub fn gradient(&self, location: LatLon) -> TangentMetres {
+        let east = self.bilinear(location.lon, location.lat, |i, j| {
+            self.grad_en[j * self.width + i].0
+        });
+        let north = self.bilinear(location.lon, location.lat, |i, j| {
+            self.grad_en[j * self.width + i].1
+        });
+        TangentMetres::new(f64::from(east), f64::from(north))
+    }
+
+    /// Patch-local bilinear lookup. Lat / lon clamp to the cell-centre
+    /// range; the caller is expected to bbox-check first via [`Self::bbox`].
+    fn bilinear<F: Fn(usize, usize) -> f32>(&self, lon: f64, lat: f64, sample: F) -> f32 {
+        let fi = ((lon - self.bbox.lon_min) / self.cell_deg - 0.5)
+            .clamp(0.0, (self.width - 1) as f64);
+        let fj = ((lat - self.bbox.lat_min) / self.cell_deg - 0.5)
+            .clamp(0.0, (self.height - 1) as f64);
+        let i0 = fi.floor() as usize;
+        let j0 = fj.floor() as usize;
+        let i1 = (i0 + 1).min(self.width - 1);
+        let j1 = (j0 + 1).min(self.height - 1);
+        let alpha = (fi - fi.floor()) as f32;
+        let beta = (fj - fj.floor()) as f32;
+        let s00 = sample(i0, j0);
+        let s10 = sample(i1, j0);
+        let s01 = sample(i0, j1);
+        let s11 = sample(i1, j1);
+        let s0 = s00 * (1.0 - alpha) + s10 * alpha;
+        let s1 = s01 * (1.0 - alpha) + s11 * alpha;
+        s0 * (1.0 - beta) + s1 * beta
+    }
+}
+
+// ============================================================================
+// TwoTierLandmass: coarse global grid + fine regional patches
+// ============================================================================
+
+/// Coarse global [`LandmassGrid`] plus a vector of fine [`FinePatch`]es.
+///
+/// Lookups (`signed_distance_m`, `gradient`) scan the fine patches in
+/// declaration order and return the first hit; anything outside every
+/// patch falls through to the coarse grid. `find_sea_path` delegates to
+/// the coarse grid entirely — A\* expansion stays on a uniform graph
+/// (Phase 7 of the two-tier plan upgrades this so the benchmark route
+/// also threads the narrow fine tubes).
+///
+/// Patches are stored in `Vec`; a linear scan is fine for the expected
+/// 4–8 patches derived from [`STRAIT_CARVE_OUTS`]. If patch count grows
+/// past ~32 a bucket index keyed on lat band would amortise.
+pub struct TwoTierLandmass {
+    coarse: LandmassGrid,
+    fine: Vec<FinePatch>,
+    /// Cumulative flat-index offsets for the unified-graph A\*. Element
+    /// `k` is the first cell index of `fine[k]`; `fine_offsets.last()`
+    /// is the total cell count. Length is `fine.len() + 1`.
+    fine_offsets: Vec<usize>,
+}
+
+impl TwoTierLandmass {
+    /// Construct from a pre-built coarse grid and the set of fine
+    /// patches. Test-shaped entry point; production code goes through
+    /// `landmass_grid_two_tier` once that lands in Phase 4.
+    pub fn new(coarse: LandmassGrid, fine: Vec<FinePatch>) -> Self {
+        let mut fine_offsets = Vec::with_capacity(fine.len() + 1);
+        let (cw, ch) = coarse.dims();
+        let mut acc = cw * ch;
+        fine_offsets.push(acc);
+        for p in &fine {
+            let (w, h) = p.dims();
+            acc += w * h;
+            fine_offsets.push(acc);
+        }
+        Self {
+            coarse,
+            fine,
+            fine_offsets,
+        }
+    }
+
+    /// Borrow the coarse global grid. Used by the viz overlay so cells
+    /// outside every fine patch still paint.
+    pub fn coarse(&self) -> &LandmassGrid {
+        &self.coarse
+    }
+
+    /// Borrow the fine patches. Used by the viz overlay to draw the
+    /// finer grid inside each fine bbox on top of the coarse cells.
+    pub fn fine_patches(&self) -> &[FinePatch] {
+        &self.fine
+    }
+}
+
+/// Decoded form of a flat unified-graph cell index.
+///
+/// The flat index space lays cells out as `[coarse, fine[0], fine[1],
+/// ...]` — the offsets are cached on the [`TwoTierLandmass`] in
+/// `fine_offsets`. A\* operates on flat `usize` indices so its
+/// `closed` / `g_score` `Vec`s can be allocated once; this enum is
+/// just for decoding inside the per-cell hot path.
+#[derive(Copy, Clone, Debug)]
+enum TwoTierCell {
+    Coarse { i: usize, j: usize },
+    Fine { patch: usize, i: usize, j: usize },
+}
+
+impl TwoTierLandmass {
+    /// Total flat cell count: coarse + every fine patch.
+    fn total_cells(&self) -> usize {
+        *self.fine_offsets.last().expect("fine_offsets non-empty")
+    }
+
+    fn encode_cell(&self, cell: TwoTierCell) -> usize {
+        match cell {
+            TwoTierCell::Coarse { i, j } => {
+                let (w, _) = self.coarse.dims();
+                j * w + i
+            }
+            TwoTierCell::Fine { patch, i, j } => {
+                let (w, _) = self.fine[patch].dims();
+                self.fine_offsets[patch] + j * w + i
+            }
+        }
+    }
+
+    #[expect(
+        clippy::unreachable,
+        reason = "the loop exhausts every fine_offsets range and the leading \
+                  check covers coarse, so the trailing call is only reached \
+                  via an out-of-bounds idx — a caller bug we want to panic on \
+                  loudly rather than swallow."
+    )]
+    fn decode_cell(&self, idx: usize) -> TwoTierCell {
+        let coarse_size = self.fine_offsets[0];
+        if idx < coarse_size {
+            let (w, _) = self.coarse.dims();
+            return TwoTierCell::Coarse {
+                i: idx % w,
+                j: idx / w,
+            };
+        }
+        for (k, p) in self.fine.iter().enumerate() {
+            if idx < self.fine_offsets[k + 1] {
+                let (w, _) = p.dims();
+                let local = idx - self.fine_offsets[k];
+                return TwoTierCell::Fine {
+                    patch: k,
+                    i: local % w,
+                    j: local / w,
+                };
+            }
+        }
+        unreachable!("idx out of range: {idx} (total {})", self.total_cells())
+    }
+
+    /// Flat index of the active cell containing `location`. Fine patch
+    /// hits override the coarse fallback; patches are checked in order.
+    fn active_cell_at(&self, location: LatLon) -> usize {
+        let p = LatLon::new(wrap_lon_deg(location.lon), location.lat);
+        for (k, patch) in self.fine.iter().enumerate() {
+            if patch.bbox().contains(p) {
+                let (i, j) = patch.cell_index_of(p);
+                return self.encode_cell(TwoTierCell::Fine { patch: k, i, j });
+            }
+        }
+        let coarse = &self.coarse;
+        let (w, h) = coarse.dims();
+        let fi = ((p.lon + 180.0).rem_euclid(360.0)) / coarse.cell_deg() - 0.5;
+        let fj = (p.lat + 90.0) / coarse.cell_deg() - 0.5;
+        let i = (fi + 0.5).floor() as isize;
+        let j = (fj + 0.5).floor().clamp(0.0, (h - 1) as f64) as isize;
+        let i = i.rem_euclid(w as isize) as usize;
+        let j = (j as usize).min(h - 1);
+        self.encode_cell(TwoTierCell::Coarse { i, j })
+    }
+
+    fn cell_centre_at_idx(&self, idx: usize) -> LatLon {
+        match self.decode_cell(idx) {
+            TwoTierCell::Coarse { i, j } => self.coarse.cell_centre(i, j),
+            TwoTierCell::Fine { patch, i, j } => self.fine[patch].cell_centre(i, j),
+        }
+    }
+
+    fn is_sea_at_idx(&self, idx: usize) -> bool {
+        match self.decode_cell(idx) {
+            TwoTierCell::Coarse { i, j } => self.coarse.sdf_at_cell(i, j) >= 0.0,
+            TwoTierCell::Fine { patch, i, j } => self.fine[patch].is_sea_cell(i, j),
+        }
+    }
+
+    /// 8-connected neighbours of `idx` at the cell's own tier
+    /// resolution, each remapped to the active cell containing the
+    /// neighbour's geographic position. Crossing a fine-bbox boundary
+    /// hops between tiers naturally — a fine cell's outside neighbours
+    /// land on the coarse cell containing them and vice versa.
+    fn neighbour_cells(&self, idx: usize) -> impl Iterator<Item = usize> + '_ {
+        let cell = self.decode_cell(idx);
+        let (centre, cell_deg) = match cell {
+            TwoTierCell::Coarse { i, j } => (self.coarse.cell_centre(i, j), self.coarse.cell_deg()),
+            TwoTierCell::Fine { patch, i, j } => {
+                (self.fine[patch].cell_centre(i, j), self.fine[patch].cell_deg())
+            }
+        };
+        [-1isize, 0, 1].into_iter().flat_map(move |dj| {
+            [-1isize, 0, 1].into_iter().filter_map(move |di| {
+                if di == 0 && dj == 0 {
+                    return None;
+                }
+                let n_lat = centre.lat + f64::from(di32(dj)) * cell_deg;
+                if !(-90.0..=90.0).contains(&n_lat) {
+                    return None;
+                }
+                let n_lon = wrap_lon_deg(centre.lon + f64::from(di32(di)) * cell_deg);
+                Some(self.active_cell_at(LatLon::new(n_lon, n_lat)))
+            })
+        })
+    }
+}
+
+#[inline]
+fn di32(x: isize) -> i32 {
+    x as i32
+}
+
+impl LandmassSource for TwoTierLandmass {
+    fn signed_distance_m(&self, location: LatLon) -> f64 {
+        let lon = wrap_lon_deg(location.lon);
+        let p = LatLon::new(lon, location.lat);
+        for patch in &self.fine {
+            if patch.bbox().contains(p) {
+                return patch.signed_distance_m(p);
+            }
+        }
+        self.coarse.signed_distance_m(location)
+    }
+
+    fn gradient(&self, location: LatLon) -> TangentMetres {
+        let lon = wrap_lon_deg(location.lon);
+        let p = LatLon::new(lon, location.lat);
+        for patch in &self.fine {
+            if patch.bbox().contains(p) {
+                return patch.gradient(p);
+            }
+        }
+        self.coarse.gradient(location)
+    }
+
+    /// Use the finest cell-size in the two-tier configuration to drive
+    /// substep cadence. This forces open-ocean chords to be sampled at
+    /// fine resolution too, which is more expensive but keeps the
+    /// substep budget consistent regardless of whether a given chord
+    /// happens to enter a fine patch. Phase 7 / smart-substep would
+    /// recover the open-ocean cost.
+    fn sampling_step_metres(&self) -> f64 {
+        let fine_min = self
+            .fine
+            .iter()
+            .map(FinePatch::cell_deg)
+            .fold(f64::INFINITY, f64::min);
+        let min_cell = fine_min.min(self.coarse.cell_deg());
+        min_cell * METRES_PER_DEGREE * 0.5
+    }
+
+    fn find_sea_path(
+        &self,
+        origin: LatLon,
+        destination: LatLon,
+        bounds: &RouteBounds,
+        bias: SeaPathBias,
+    ) -> Option<Vec<LatLon>> {
+        astar_sea_path_two_tier(self, origin, destination, bounds, bias)
+    }
+}
+
 /// Outward unit gradient at every cell, derived by central differences
 /// on the signed distance field. Sign convention: positive = away from
 /// land. Magnitude is normalised to ~1 wherever the SDF is locally
 /// non-flat; degenerates to zero at saddle points.
-fn compute_gradient(sdf_m: &[f32], width: usize, height: usize, cell_deg: f64) -> Vec<(f32, f32)> {
+///
+/// The `cos(lat)` east-axis shrinkage uses each cell's actual latitude
+/// derived from `frame.origin_lat`, so fine patches at high latitudes
+/// get the correct east-cell metric. `frame.lon_wrap` controls whether
+/// the left/right neighbours of edge columns wrap around (global grid)
+/// or clamp via one-sided differences (bounded patch).
+fn compute_gradient(sdf_m: &[f32], frame: MaskFrame) -> Vec<(f32, f32)> {
+    let MaskFrame {
+        width,
+        height,
+        cell_deg,
+        origin_lat,
+        lon_wrap,
+        ..
+    } = frame;
     let mut grad = vec![(0.0f32, 0.0f32); width * height];
     let cell_m = cell_deg * METRES_PER_DEGREE;
     for j in 0..height {
-        let lat = -90.0 + (j as f64 + 0.5) * cell_deg;
+        let lat = origin_lat + (j as f64 + 0.5) * cell_deg;
         let cos_lat = lat.to_radians().cos().max(1e-9);
         // Central differences in *cells*. Convert to metres using the
         // east-cell metre length at this latitude (cos(lat) shrinkage)
@@ -731,10 +1249,17 @@ fn compute_gradient(sdf_m: &[f32], width: usize, height: usize, cell_deg: f64) -
         let inv_dx_m = 1.0 / (2.0 * cell_m * cos_lat);
         let inv_dy_m = 1.0 / (2.0 * cell_m);
         for i in 0..width {
-            // Lon wraps; lat clamps at the poles using one-sided
-            // differences via min/max on the index.
-            let il = ((i as isize - 1).rem_euclid(width as isize)) as usize;
-            let ir = ((i as isize + 1).rem_euclid(width as isize)) as usize;
+            // Lon wraps on the global grid; on bounded patches we clamp
+            // at the edge columns via one-sided differences. Lat always
+            // clamps at the poles (and at the patch lat edges).
+            let (il, ir) = if lon_wrap {
+                (
+                    ((i as isize - 1).rem_euclid(width as isize)) as usize,
+                    ((i as isize + 1).rem_euclid(width as isize)) as usize,
+                )
+            } else {
+                (i.saturating_sub(1), (i + 1).min(width - 1))
+            };
             let jb = j.saturating_sub(1);
             let jt = (j + 1).min(height - 1);
             let dsdx = (sdf_m[j * width + ir] - sdf_m[j * width + il]) as f64 * inv_dx_m;
@@ -1019,6 +1544,175 @@ fn reconstruct_polyline(
 }
 
 // ============================================================================
+// Two-tier A* (unified coarse + fine cell graph)
+// ============================================================================
+
+/// BFS-snap an arbitrary `(lon, lat)` to the nearest sea cell in the
+/// unified two-tier graph. Returns the flat cell index, or `None` if
+/// no sea cell is reachable within [`SNAP_TO_SEA_MAX_RING`] expansion
+/// hops.
+fn snap_to_sea_cell_two_tier(two_tier: &TwoTierLandmass, location: LatLon) -> Option<usize> {
+    let start = two_tier.active_cell_at(location);
+    if two_tier.is_sea_at_idx(start) {
+        return Some(start);
+    }
+    let mut visited = vec![false; two_tier.total_cells()];
+    let mut queue = VecDeque::new();
+    visited[start] = true;
+    queue.push_back((start, 0usize));
+    while let Some((idx, ring)) = queue.pop_front() {
+        if two_tier.is_sea_at_idx(idx) {
+            return Some(idx);
+        }
+        if ring >= SNAP_TO_SEA_MAX_RING {
+            continue;
+        }
+        for neighbour in two_tier.neighbour_cells(idx) {
+            if !visited[neighbour] {
+                visited[neighbour] = true;
+                queue.push_back((neighbour, ring + 1));
+            }
+        }
+    }
+    None
+}
+
+/// Bias barrier check for the unified-graph A*. Identical semantics to
+/// [`bias_allows`], just operating on flat cell indices.
+fn bias_allows_two_tier(
+    two_tier: &TwoTierLandmass,
+    bounds: &RouteBounds,
+    start: usize,
+    goal: usize,
+    cell: usize,
+    bias: SeaPathBias,
+) -> bool {
+    if cell == start || cell == goal {
+        return true;
+    }
+    let centre = two_tier.cell_centre_at_idx(cell);
+    let line_lat = line_lat_at_lon(bounds, centre.lon);
+    let offset = centre.lat - line_lat;
+    match bias {
+        SeaPathBias::None => true,
+        SeaPathBias::North => offset >= -BIAS_BARRIER_SLACK_DEG,
+        SeaPathBias::South => offset <= BIAS_BARRIER_SLACK_DEG,
+    }
+}
+
+/// A\* over the unified two-tier cell graph: coarse outside fine
+/// bboxes, fine inside. Each cell's neighbours are 8-connected at the
+/// cell's own tier resolution, remapped to whichever active cell
+/// contains each neighbour's geographic position — so at a fine-bbox
+/// boundary the path naturally hops between tiers. Edge cost is
+/// great-circle distance between cell centres; heuristic is
+/// great-circle to the goal cell.
+fn astar_sea_path_two_tier(
+    two_tier: &TwoTierLandmass,
+    origin: LatLon,
+    destination: LatLon,
+    bounds: &RouteBounds,
+    bias: SeaPathBias,
+) -> Option<Vec<LatLon>> {
+    let start = snap_to_sea_cell_two_tier(two_tier, origin)?;
+    let goal = snap_to_sea_cell_two_tier(two_tier, destination)?;
+    if start == goal {
+        return Some(vec![origin, destination]);
+    }
+
+    let n_cells = two_tier.total_cells();
+    let mut g_score = vec![f64::INFINITY; n_cells];
+    let mut came_from = vec![u32::MAX; n_cells];
+    let mut closed = vec![false; n_cells];
+    let mut open: BinaryHeap<AStarNode> = BinaryHeap::new();
+
+    let start_centre = two_tier.cell_centre_at_idx(start);
+    let goal_centre = two_tier.cell_centre_at_idx(goal);
+    g_score[start] = 0.0;
+    open.push(AStarNode {
+        f_score: haversine(start_centre, goal_centre),
+        cell: u32::try_from(start).expect("cell index fits in u32"),
+    });
+
+    let mut expansions = 0usize;
+    while let Some(AStarNode { cell, .. }) = open.pop() {
+        let cell = cell as usize;
+        if closed[cell] {
+            continue;
+        }
+        closed[cell] = true;
+        if cell == goal {
+            return Some(reconstruct_polyline_two_tier(
+                two_tier,
+                &came_from,
+                cell,
+                origin,
+                destination,
+            ));
+        }
+        expansions += 1;
+        if expansions > ASTAR_MAX_EXPANSIONS {
+            log::warn!(
+                "find_sea_path (two-tier): A* aborted after {ASTAR_MAX_EXPANSIONS} expansions \
+                 (origin={origin:?}, destination={destination:?})",
+            );
+            return None;
+        }
+        let cur_centre = two_tier.cell_centre_at_idx(cell);
+        for neighbour in two_tier.neighbour_cells(cell) {
+            if !two_tier.is_sea_at_idx(neighbour) {
+                continue;
+            }
+            if !bias_allows_two_tier(two_tier, bounds, start, goal, neighbour, bias) {
+                continue;
+            }
+            let neighbour_centre = two_tier.cell_centre_at_idx(neighbour);
+            if neighbour != start
+                && neighbour != goal
+                && !bounds.bbox.contains(neighbour_centre)
+            {
+                continue;
+            }
+            let step = haversine(cur_centre, neighbour_centre);
+            let tentative_g = g_score[cell] + step;
+            if tentative_g < g_score[neighbour] {
+                g_score[neighbour] = tentative_g;
+                came_from[neighbour] = u32::try_from(cell).expect("cell index fits in u32");
+                let h = haversine(neighbour_centre, goal_centre);
+                open.push(AStarNode {
+                    f_score: tentative_g + h,
+                    cell: u32::try_from(neighbour).expect("cell index fits in u32"),
+                });
+            }
+        }
+    }
+    None
+}
+
+fn reconstruct_polyline_two_tier(
+    two_tier: &TwoTierLandmass,
+    came_from: &[u32],
+    goal_cell: usize,
+    origin: LatLon,
+    destination: LatLon,
+) -> Vec<LatLon> {
+    let mut cells: Vec<usize> = vec![goal_cell];
+    let mut cur = goal_cell;
+    while came_from[cur] != u32::MAX {
+        cur = came_from[cur] as usize;
+        cells.push(cur);
+    }
+    cells.reverse();
+    let mut polyline: Vec<LatLon> = Vec::with_capacity(cells.len() + 2);
+    polyline.push(origin);
+    for cell in cells {
+        polyline.push(two_tier.cell_centre_at_idx(cell));
+    }
+    polyline.push(destination);
+    polyline
+}
+
+// ============================================================================
 // Default global instance
 // ============================================================================
 
@@ -1051,6 +1745,104 @@ pub fn landmass_grid_at_resolution(resolution_deg: f64) -> &'static LandmassGrid
     )));
     guard.insert(key, built);
     built
+}
+
+/// Two-tier landmass at the requested coarse and fine cell sizes.
+///
+/// Cached per distinct `(coarse, fine)` pair for the program's lifetime
+/// (same `OnceLock + Mutex` pattern as [`landmass_grid_at_resolution`]).
+///
+/// The coarse grid is global at `coarse_deg`; fine patches cover each
+/// [`STRAIT_CARVE_OUTS`] entry's waypoint chain padded by
+/// `max(1.0°, 2 × coarse_deg)`. Overlapping padded bboxes are merged so
+/// the Turkish-straits chain (Dardanelles + Sea of Marmara + Bosporus)
+/// ends up as one patch rather than three.
+pub fn landmass_grid_two_tier(
+    coarse_deg: f64,
+    fine_deg: f64,
+) -> &'static TwoTierLandmass {
+    static REGISTRY: OnceLock<Mutex<HashMap<(u64, u64), &'static TwoTierLandmass>>> =
+        OnceLock::new();
+    let registry = REGISTRY.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = (coarse_deg.to_bits(), fine_deg.to_bits());
+    let mut guard = match registry.lock() {
+        Ok(g) => g,
+        Err(poison) => poison.into_inner(),
+    };
+    if let Some(grid) = guard.get(&key) {
+        return grid;
+    }
+    let built: &'static TwoTierLandmass =
+        Box::leak(Box::new(build_two_tier(coarse_deg, fine_deg)));
+    guard.insert(key, built);
+    built
+}
+
+fn build_two_tier(coarse_deg: f64, fine_deg: f64) -> TwoTierLandmass {
+    let polygons = raw_polygons();
+    let coarse = LandmassGrid::build(polygons, coarse_deg);
+    let padding_deg = (2.0 * coarse_deg).max(1.0);
+    let padded_bboxes: Vec<LonLatBbox> = STRAIT_CARVE_OUTS
+        .iter()
+        .map(|c| c.padded_bbox(padding_deg))
+        .collect();
+    let merged = merge_overlapping_bboxes(padded_bboxes);
+    log::debug!(
+        "two-tier landmass: coarse={coarse_deg}°, fine={fine_deg}°, \
+         padding={padding_deg}°, {} fine patch(es) from {} carve-out(s)",
+        merged.len(),
+        STRAIT_CARVE_OUTS.len(),
+    );
+    let fine: Vec<FinePatch> = merged
+        .into_iter()
+        .map(|bbox| FinePatch::build(polygons, bbox, fine_deg))
+        .collect();
+    TwoTierLandmass::new(coarse, fine)
+}
+
+/// Greedy bbox union: repeatedly fold any two overlapping bboxes into
+/// one and stop when no more overlaps remain. O(n²) per pass, O(n³)
+/// worst case overall — fine for the current `STRAIT_CARVE_OUTS` size
+/// (≤ ~10 entries). Assumes no input bbox crosses the antimeridian
+/// (none of the existing carve-outs do).
+fn merge_overlapping_bboxes(mut boxes: Vec<LonLatBbox>) -> Vec<LonLatBbox> {
+    loop {
+        let mut merged_one = false;
+        'outer: for i in 0..boxes.len() {
+            for j in (i + 1)..boxes.len() {
+                if bboxes_overlap(boxes[i], boxes[j]) {
+                    let union = bbox_union(boxes[i], boxes[j]);
+                    boxes.swap_remove(j);
+                    boxes[i] = union;
+                    merged_one = true;
+                    break 'outer;
+                }
+            }
+        }
+        if !merged_one {
+            break;
+        }
+    }
+    boxes
+}
+
+/// Axis-aligned rectangle overlap on `(lon, lat)`. Boundary touches
+/// count as overlapping — adjacent carve-out bboxes should merge.
+/// Antimeridian-crossing inputs are not handled.
+fn bboxes_overlap(a: LonLatBbox, b: LonLatBbox) -> bool {
+    !(a.lat_max < b.lat_min
+        || b.lat_max < a.lat_min
+        || a.lon_max < b.lon_min
+        || b.lon_max < a.lon_min)
+}
+
+fn bbox_union(a: LonLatBbox, b: LonLatBbox) -> LonLatBbox {
+    LonLatBbox::new(
+        a.lon_min.min(b.lon_min),
+        a.lon_max.max(b.lon_max),
+        a.lat_min.min(b.lat_min),
+        a.lat_max.max(b.lat_max),
+    )
 }
 
 // ============================================================================
@@ -1565,6 +2357,139 @@ mod tests {
         assert_eq!(
             total_land, 0.0,
             "Gibraltar polyline crossed {total_land:.0} m of land",
+        );
+    }
+
+    #[test]
+    fn two_tier_outside_patches_falls_back_to_coarse() {
+        // Mid-Pacific is far from every strait carve-out, so the
+        // two-tier lookup must fall through to the coarse grid and
+        // return the exact same value the coarse-only grid would.
+        let coarse = landmass_grid_at_resolution(0.5);
+        let two_tier = landmass_grid_two_tier(0.5, 0.1);
+        let p = LatLon::new(-150.0, 0.0);
+        let coarse_sd = coarse.signed_distance_m(p);
+        let two_tier_sd = two_tier.signed_distance_m(p);
+        #[expect(
+            clippy::float_cmp,
+            reason = "two-tier must literally delegate to coarse outside \
+                      every fine patch — not 'approximately equal'."
+        )]
+        let equal = coarse_sd == two_tier_sd;
+        assert!(
+            equal,
+            "two-tier mid-Pacific SDF must match coarse exactly: coarse = {coarse_sd}, two-tier = {two_tier_sd}",
+        );
+    }
+
+    #[test]
+    fn two_tier_inside_strait_patch_classifies_centerline_as_sea() {
+        // A point on the Bosporus carve-out centerline must be sea
+        // under both single-tier and two-tier: the carve-out applies
+        // in both representations. The two-tier value comes from the
+        // fine patch (the point lies inside the Bosporus-region
+        // patch's padded bbox), so this implicitly exercises the
+        // fine-tier lookup path.
+        let two_tier = landmass_grid_two_tier(0.5, 0.1);
+        let p = LatLon::new(29.07, 41.13);
+        let sd = two_tier.signed_distance_m(p);
+        assert!(
+            sd >= 0.0,
+            "Bosporus centerline must read as sea in two-tier, got SDF = {sd} m",
+        );
+    }
+
+    #[test]
+    fn carve_out_tube_is_narrower_in_fine_tier() {
+        // Pick a point ~0.33° east of the Bosporus centerline at the
+        // strait's mid-latitude — well inside the coarse 1.2-cell tube
+        // (~0.6° radius) but well outside the fine 1.2-cell tube
+        // (~0.12° radius). At full polygon resolution the point sits
+        // in Asian Istanbul / surrounding Turkish land. The fine tier
+        // therefore reports it as land while the coarse tier still
+        // calls it carved-out sea.
+        let coarse = landmass_grid_at_resolution(0.5);
+        let two_tier = landmass_grid_two_tier(0.5, 0.1);
+        let p = LatLon::new(29.40, 41.13);
+        let coarse_sd = coarse.signed_distance_m(p);
+        let two_tier_sd = two_tier.signed_distance_m(p);
+        assert!(
+            coarse_sd >= 0.0,
+            "coarse tier should still classify the point as carved-out sea, got SDF = {coarse_sd} m",
+        );
+        assert!(
+            two_tier_sd < 0.0,
+            "two-tier should expose the underlying Turkish land at this offset, got SDF = {two_tier_sd} m",
+        );
+    }
+
+    #[test]
+    fn chord_outside_fine_tube_reports_land_only_under_two_tier() {
+        // Construct a chord that walks east from the Bosporus
+        // centerline far enough to leave the fine carve-out tube but
+        // not the coarse one. The single-tier coarse search reports
+        // ~0 km of land along this chord (everything is inside the
+        // coarse 66 km tube); the two-tier search reports >0 km
+        // because once a substep midpoint clears the fine 13 km tube
+        // it sees the real Turkish land beneath.
+        let coarse = landmass_grid_at_resolution(0.5);
+        let two_tier = landmass_grid_two_tier(0.5, 0.1);
+        let origin = LatLon::new(29.07, 41.13);
+        let destination = LatLon::new(29.50, 41.13);
+        // Use the coarse-grid substep so both calls walk the same
+        // midpoints, isolating the lookup-source difference from
+        // sampling-cadence differences.
+        let step_m = coarse.sampling_step_metres();
+        let single_tier_land =
+            swarmkit_sailing::get_segment_land_metres(coarse, origin, destination, step_m);
+        let two_tier_land =
+            swarmkit_sailing::get_segment_land_metres(two_tier, origin, destination, step_m);
+        assert_eq!(
+            single_tier_land, 0.0,
+            "coarse tube still covers the offset chord; expected 0 m land, got {single_tier_land}",
+        );
+        assert!(
+            two_tier_land > 0.0,
+            "two-tier must see Turkish land east of the fine tube; expected >0 m land, got {two_tier_land}",
+        );
+    }
+
+    #[test]
+    fn two_tier_a_star_polyline_is_land_free_through_multiple_straits() {
+        // scenario-2 regression: Black Sea → off Morocco, threads
+        // Bosporus + Dardanelles + Marmara + Aegean + Mediterranean +
+        // Gibraltar. Before Phase 7 the A* polyline used coarse cells
+        // (66 km tube) so several vertices fell on fine-land (cells
+        // outside the 13 km fine tube), and the land-respecting
+        // sampler couldn't repair the resulting chord crossings —
+        // benchmark reported 218 km of land. Phase 7 puts A* on a
+        // unified coarse + fine cell graph so the polyline threads
+        // narrow fine tubes inside fine patches.
+        let two_tier = landmass_grid_two_tier(0.5, 0.1);
+        let origin = LatLon::new(33.226_245_880_126_953, 43.453_300_476_074_22);
+        let destination = LatLon::new(-10.553_238_868_713_379, 35.199_138_641_357_42);
+        let bounds = RouteBounds::new(
+            origin,
+            destination,
+            LonLatBbox::new(-19.55, 42.05, 32.20, 46.45),
+        );
+        let polyline = two_tier
+            .find_sea_path(origin, destination, &bounds, SeaPathBias::None)
+            .expect("unbiased two-tier A* must succeed for scenario-2");
+        // Every interior vertex of the polyline (i.e., every cell
+        // centre A* picked, excluding the literal origin/destination
+        // endpoints which the caller supplies) must be sea under the
+        // two-tier model — otherwise the sampler downstream will be
+        // unable to produce a land-free baseline.
+        let interior = &polyline[1..polyline.len().saturating_sub(1)];
+        let bad_count = interior
+            .iter()
+            .filter(|p| two_tier.signed_distance_m(**p) < 0.0)
+            .count();
+        assert_eq!(
+            bad_count, 0,
+            "{bad_count} of {} A* polyline vertices report fine-land",
+            interior.len(),
         );
     }
 

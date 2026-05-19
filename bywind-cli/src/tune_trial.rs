@@ -264,6 +264,7 @@ fn run_route(
             boat_cfg.to_boat(),
             weights,
             search_cfg.sdf_resolution_deg,
+            search_cfg.fine_sdf_resolution_deg,
         )
         .map_err(|e| AppError::no_result(anyhow!("route `{slug}` seed {seed} — {e}",)))?;
         let evolution = result.route_evolution;

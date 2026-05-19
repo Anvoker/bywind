@@ -110,6 +110,14 @@ pub struct SearchOverrides {
     /// time without improving mean fitness).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sdf_resolution_deg: Option<f64>,
+    /// Fine-tier SDF cell size for the two-tier landmass, in degrees.
+    /// `Some(fine)` opts into a high-resolution patch over every
+    /// strait carve-out, making the visual tube ~(coarse / fine)×
+    /// narrower; `Some(None)` is encoded as the outer `Option` being
+    /// `None` (TOML omission) which keeps whatever value the config
+    /// layer already had. Must be ≤ `sdf_resolution_deg` when set.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fine_sdf_resolution_deg: Option<f64>,
     /// Optional RNG seed for deterministic search runs. `None` (the
     /// default) draws fresh OS entropy. Used by the PSO-tuning study.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -506,6 +514,9 @@ impl SearchOverrides {
         if other.sdf_resolution_deg.is_some() {
             self.sdf_resolution_deg = other.sdf_resolution_deg;
         }
+        if other.fine_sdf_resolution_deg.is_some() {
+            self.fine_sdf_resolution_deg = other.fine_sdf_resolution_deg;
+        }
         if other.seed.is_some() {
             self.seed = other.seed;
         }
@@ -550,6 +561,9 @@ impl SearchOverrides {
         }
         if let Some(v) = self.sdf_resolution_deg {
             cfg.sdf_resolution_deg = v;
+        }
+        if let Some(v) = self.fine_sdf_resolution_deg {
+            cfg.fine_sdf_resolution_deg = Some(v);
         }
         if let Some(v) = self.seed {
             cfg.seed = Some(v);
@@ -840,6 +854,15 @@ mod tests {
         let mut cfg = SearchConfig::default();
         overrides.apply_to(&mut cfg);
         assert!((cfg.sdf_resolution_deg - 0.1).abs() < 1e-12);
+    }
+
+    #[test]
+    fn search_apply_to_writes_fine_sdf_resolution_deg() {
+        let overrides: SearchOverrides =
+            toml::from_str("fine_sdf_resolution_deg = 0.05\n").expect("valid");
+        let mut cfg = SearchConfig::default();
+        overrides.apply_to(&mut cfg);
+        assert_eq!(cfg.fine_sdf_resolution_deg, Some(0.05));
     }
 
     #[test]

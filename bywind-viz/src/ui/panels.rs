@@ -465,6 +465,41 @@ impl BywindApp {
         }
     }
 
+    /// "Two-tier SDF" row of the Advanced Settings grid: a checkbox
+    /// that toggles between single-tier and two-tier landmass, plus a
+    /// `DragValue` for the fine cell size when two-tier is on.
+    /// Extracted from `render_advanced_settings_window` to keep that
+    /// function under clippy's `too_many_lines` cap.
+    fn render_two_tier_row(&mut self, ui: &mut egui::Ui) {
+        ui.label("Two-tier SDF").on_hover_text(
+            "Enable a high-resolution SDF tier over each strait \
+             carve-out's neighbourhood. Visual carve-out tubes shrink \
+             proportionally to (coarse / fine) — e.g., at coarse=0.5° \
+             and fine=0.1° the Bosporus tube is ~13 km instead of \
+             ~132 km. Per-search cost goes up roughly linearly with \
+             (coarse / fine) due to finer substep cadence near coasts.",
+        );
+        let mut two_tier_enabled = self.search.fine_sdf_resolution_deg.is_some();
+        ui.horizontal(|ui| {
+            if ui.checkbox(&mut two_tier_enabled, "").changed() {
+                self.search.fine_sdf_resolution_deg =
+                    if two_tier_enabled { Some(0.1) } else { None };
+            }
+            if let Some(fine) = self.search.fine_sdf_resolution_deg.as_mut() {
+                ui.add(
+                    egui::DragValue::new(fine)
+                        .range(0.01..=self.search.sdf_resolution_deg)
+                        .speed(0.01)
+                        .prefix("fine = ")
+                        .suffix("°"),
+                );
+            } else {
+                ui.weak("(single-tier)");
+            }
+        });
+        ui.end_row();
+    }
+
     /// Search-section block of the tools panel: waypoint count, the
     /// fitness-weights / PSO-parameter grid, and the Run Search button.
     /// Extracted from `render_tools_panel` purely to keep that function
@@ -724,6 +759,8 @@ impl BywindApp {
                         );
                         ui.end_row();
 
+                        self.render_two_tier_row(ui);
+
                         ui.label("Range K").on_hover_text(
                             "Departure-time samples per segment in the inner time-PSO \
                              lookup table. Higher values reduce time-axis interpolation \
@@ -791,6 +828,7 @@ impl BywindApp {
                     self.search.step_distance_fraction = defaults.step_distance_fraction;
                     self.search.bake_step_deg = defaults.bake_step_deg;
                     self.search.sdf_resolution_deg = defaults.sdf_resolution_deg;
+                    self.search.fine_sdf_resolution_deg = defaults.fine_sdf_resolution_deg;
                     self.search.range_k = defaults.range_k;
                     self.search.k_mcr = defaults.k_mcr;
                     self.search.seed = defaults.seed;

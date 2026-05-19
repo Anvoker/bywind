@@ -195,6 +195,7 @@ impl BywindApp {
         );
         let bake_bounds = bounds.to_bake_bounds(self.search.bake_step_deg);
         let sdf_resolution = self.search.sdf_resolution_deg;
+        let fine_sdf_resolution = self.search.fine_sdf_resolution_deg;
 
         let wind_map_snapshot: TimedWindMap = wind_map.clone();
         let ctx = ctx.clone();
@@ -226,6 +227,7 @@ impl BywindApp {
                 ship,
                 weights,
                 sdf_resolution,
+                fine_sdf_resolution,
             );
             // Receiver may have been dropped (job replaced, app closed) — fine.
             drop(tx.send(result));
@@ -258,6 +260,7 @@ impl BywindApp {
         let settings = self.search.to_search_settings();
         let ship = self.boat.to_boat();
         let sdf_resolution = self.search.sdf_resolution_deg;
+        let fine_sdf_resolution = self.search.fine_sdf_resolution_deg;
 
         let baked = baked_ref.clone();
         let ctx = ctx.clone();
@@ -288,6 +291,7 @@ impl BywindApp {
                     fixed_path,
                     weights,
                     sdf_resolution,
+                    fine_sdf_resolution,
                 );
                 // Drop silently if a later drag-release overwrote the slot.
                 drop(tx.send(ReoptMsg {

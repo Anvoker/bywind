@@ -68,6 +68,11 @@ fn run_one(topology: Topology) -> f64 {
         BoatConfig::default().to_boat(),
         weights,
         bywind::SDF_RESOLUTION_DEG,
+        // Synthetic wind map → no real landmass, no two-tier benefit. The
+        // smoke test pins fitness for a given topology/seed pair, so we
+        // hold the configuration to single-tier to keep that pinned value
+        // independent of the carve-out list / fine-tier defaults.
+        None,
     )
     .expect("smoke test inputs produce a feasible route");
     let route_evolution = result.route_evolution;

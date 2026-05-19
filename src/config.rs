@@ -88,6 +88,11 @@ const DEFAULT_PATH_KICK_GAMMA_MIN_FRACTION: f64 = 0.005;
 
 const DEFAULT_BAKE_STEP_DEG: f64 = 0.25;
 const DEFAULT_SDF_RESOLUTION_DEG: f64 = 0.5;
+/// Default fine-tier SDF cell size for the two-tier landmass. `Some(0.1)`
+/// → carve-out tubes inside fine patches read as ~13 km bands instead of
+/// the ~132 km coarse tubes; `None` would disable two-tier and use only
+/// the coarse grid.
+const DEFAULT_FINE_SDF_RESOLUTION_DEG: Option<f64> = Some(0.1);
 const DEFAULT_RANGE_K: usize = 8;
 const DEFAULT_K_MCR: usize = 8;
 
@@ -188,6 +193,16 @@ pub struct SearchConfig {
     /// value pays a one-shot ~sub-second build.
     pub sdf_resolution_deg: f64,
 
+    /// Fine-tier SDF cell size for the two-tier landmass, in degrees.
+    /// `None` disables two-tier and uses only the coarse grid at
+    /// `sdf_resolution_deg`. `Some(fine)` adds a fine SDF tier over
+    /// every [`STRAIT_CARVE_OUTS`][crate::landmass::STRAIT_CARVE_OUTS]
+    /// region — narrower visual tubes plus stricter PSO routing near
+    /// straits. Must be ≤ `sdf_resolution_deg` when set; finer values
+    /// raise build time / memory roughly quadratically.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fine_sdf_resolution_deg: Option<f64>,
+
     /// Inner time-PSO lookup-table samples along the departure-time
     /// axis. Default 8. Must be ≥ 2.
     pub range_k: usize,
@@ -222,6 +237,7 @@ impl Default for SearchConfig {
             step_distance_fraction: DEFAULT_STEP_DISTANCE_FRACTION,
             bake_step_deg: DEFAULT_BAKE_STEP_DEG,
             sdf_resolution_deg: DEFAULT_SDF_RESOLUTION_DEG,
+            fine_sdf_resolution_deg: DEFAULT_FINE_SDF_RESOLUTION_DEG,
             range_k: DEFAULT_RANGE_K,
             k_mcr: DEFAULT_K_MCR,
             topology: Topology::default(),
@@ -342,6 +358,30 @@ impl SearchConfig {
                 field: "sdf_resolution_deg",
                 message: format!("must be in [0.05, 5.0], got {}", self.sdf_resolution_deg,),
             });
+        }
+        if let Some(fine) = self.fine_sdf_resolution_deg {
+            ValidationError::require_finite("fine_sdf_resolution_deg", fine)?;
+            ValidationError::require_positive("fine_sdf_resolution_deg", fine)?;
+            // Fine patches are bounded by carve-out bboxes (≤ ~10° per side),
+            // so the same upper bound as the coarse case is more than
+            // generous. The lower bound is tighter — going below 0.01° in a
+            // 10° patch is ~1M cells per patch (~12 MiB), aggressive but
+            // tolerable.
+            if !(0.01..=5.0).contains(&fine) {
+                return Err(ValidationError {
+                    field: "fine_sdf_resolution_deg",
+                    message: format!("must be in [0.01, 5.0], got {fine}"),
+                });
+            }
+            if fine > self.sdf_resolution_deg {
+                return Err(ValidationError {
+                    field: "fine_sdf_resolution_deg",
+                    message: format!(
+                        "fine tier must be ≤ coarse: fine = {fine}, coarse = {}",
+                        self.sdf_resolution_deg,
+                    ),
+                });
+            }
         }
         // 256 × 256 × f64 × 60 segs × 40 particles ≈ 1.25 GiB — the
         // ceiling where the worker still boots.

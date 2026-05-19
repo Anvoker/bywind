@@ -143,14 +143,8 @@ impl BywindApp {
             // each vertex on draw via `map_to_screen`.
             draw_coastlines(ui.painter(), &view, crate::coastlines::landmasses());
 
-            // Optional diagnostic: paint the rasterised + carved SDF cells
-            // over the coastlines so the user can see exactly which cells
-            // the search considers sea. The grid build is cached in
-            // `OnceLock`, so toggling the overlay just iterates visible
-            // cells — no per-toggle setup cost.
             if self.view.show_sdf_overlay {
-                let grid = bywind::landmass_grid_at_resolution(self.search.sdf_resolution_deg);
-                crate::draw::draw_sdf_overlay(ui.painter(), &view, grid);
+                self.render_sdf_overlay(ui, &view);
             }
 
             // On-map waypoint labels: nothing in "Show all particles" (text
@@ -182,27 +176,7 @@ impl BywindApp {
                 draw_benchmark_route(ui.painter(), bench, &view);
             }
 
-            if let Some(re) = &self.outputs.route_evolution {
-                let weights = bywind::SearchWeights {
-                    time_weight: self.search.time_weight,
-                    fuel_weight: self.search.fuel_weight,
-                    land_weight: self.search.land_weight,
-                };
-                route_evolution_match!(re, |evolution| render_route_evolution(
-                    ui.painter(),
-                    &view,
-                    evolution,
-                    self.outputs.iteration,
-                    self.view.show_all_particles,
-                    self.outputs.baked_wind_map.as_ref(),
-                    self.outputs.boat.as_ref(),
-                    self.outputs.route_bounds,
-                    weights,
-                    &mut self.outputs.segment_stats,
-                    &mut self.outputs.best_fitness,
-                    waypoint_label,
-                ));
-            }
+            self.render_route_overlay(ui, &view, waypoint_label);
 
             self.tool_interaction(ui, ui.ctx(), &view, &response);
 
@@ -256,6 +230,63 @@ impl BywindApp {
     /// pick `pan_offset` so the bounds' centre lands at the panel centre.
     /// Scale is clamped to the slider range so the slider remains usable as
     /// an adjustment knob after fitting.
+    /// Paint the SDF-cell overlay on top of the coastline polygons.
+    /// Dispatches on `fine_sdf_resolution_deg` so the overlay reflects
+    /// what the search actually sees (coarse only vs coarse + fine
+    /// patches). Grid builds are cached in `OnceLock`, so toggling the
+    /// overlay just iterates visible cells — no per-toggle setup cost.
+    /// Extracted from `render_central_panel` to keep that function
+    /// under clippy's `too_many_lines` cap.
+    /// Draw the gbest path (and optionally every particle's pbest) on
+    /// top of the wind / coastline / SDF layers. Extracted from
+    /// `render_central_panel` to keep that function under clippy's
+    /// `too_many_lines` cap.
+    fn render_route_overlay(
+        &mut self,
+        ui: &egui::Ui,
+        view: &ViewTransform,
+        waypoint_label: Option<crate::draw::WaypointLabel>,
+    ) {
+        let Some(re) = &self.outputs.route_evolution else {
+            return;
+        };
+        let weights = bywind::SearchWeights {
+            time_weight: self.search.time_weight,
+            fuel_weight: self.search.fuel_weight,
+            land_weight: self.search.land_weight,
+        };
+        route_evolution_match!(re, |evolution| render_route_evolution(
+            ui.painter(),
+            view,
+            evolution,
+            self.outputs.iteration,
+            self.view.show_all_particles,
+            self.outputs.baked_wind_map.as_ref(),
+            self.outputs.boat.as_ref(),
+            self.outputs.route_bounds,
+            weights,
+            &mut self.outputs.segment_stats,
+            &mut self.outputs.best_fitness,
+            waypoint_label,
+        ));
+    }
+
+    fn render_sdf_overlay(&self, ui: &egui::Ui, view: &ViewTransform) {
+        match self.search.fine_sdf_resolution_deg {
+            None => {
+                let grid = bywind::landmass_grid_at_resolution(self.search.sdf_resolution_deg);
+                crate::draw::draw_sdf_overlay(ui.painter(), view, grid);
+            }
+            Some(fine) => {
+                let two_tier = bywind::landmass::landmass_grid_two_tier(
+                    self.search.sdf_resolution_deg,
+                    fine,
+                );
+                crate::draw::draw_sdf_overlay_two_tier(ui.painter(), view, two_tier);
+            }
+        }
+    }
+
     /// Mouse-wheel zoom on the central panel. While the cursor is over
     /// the panel, vertical scroll multiplies `render_scale` by an
     /// exponential factor (so each wheel "click" feels uniform across

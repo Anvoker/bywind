@@ -173,6 +173,10 @@ fn run_scenario(scenario: &Scenario, wind: &TimedWindMap) {
                 ship,
                 weights,
                 res,
+                // Single-tier for the bench so the resolution sweep is
+                // apples-to-apples — adding a fine tier per resolution
+                // would conflate two effects.
+                None,
             )
             .expect("search failed");
             let search_secs = start.elapsed().as_secs_f64();

@@ -8,7 +8,7 @@ use swarmkit_sailing::{
     SearchSettings, get_segment_fuel_and_time, get_segment_land_metres, reoptimize_times, search,
 };
 
-use crate::landmass::landmass_grid_at_resolution;
+use crate::landmass::{landmass_grid_at_resolution, landmass_grid_two_tier};
 use crate::route::{BenchmarkRoute, RouteEvolution, WaypointCount, debug_assert_path_no_nans};
 use crate::waypoint_match;
 use crate::wind_map::{BakeBounds, BakedWindMap, TimedWindMap};
@@ -153,7 +153,7 @@ where
 /// gbest fitness (every candidate xy infeasible).
 #[expect(
     clippy::too_many_arguments,
-    reason = "Eight first-class inputs the caller picks independently; \
+    reason = "Nine first-class inputs the caller picks independently; \
               a struct would just relocate the destructuring."
 )]
 pub fn run_search_blocking(
@@ -165,6 +165,7 @@ pub fn run_search_blocking(
     ship: Boat,
     weights: SearchWeights,
     sdf_resolution_deg: f64,
+    fine_sdf_resolution_deg: Option<f64>,
 ) -> Result<SearchResult, SearchError> {
     let bake_start = std::time::Instant::now();
     let baked = wind_map.bake(bake_bounds);
@@ -177,6 +178,7 @@ pub fn run_search_blocking(
         ship,
         weights,
         sdf_resolution_deg,
+        fine_sdf_resolution_deg,
     )?;
     // Inner call zero-init'd `bake_duration`; patch in the real value.
     result.bake_duration = bake_duration;
@@ -191,10 +193,10 @@ pub fn run_search_blocking(
 /// [`SearchError::NoFeasibleRoute`] when the PSO converges with non-finite
 /// gbest fitness.
 #[expect(
-    clippy::panic_in_result_fn,
-    reason = "debug-only `cfg!(debug_assertions)` asserts catch NaN \
-              before it corrupts downstream rendering; release builds \
-              compile them out."
+    clippy::too_many_arguments,
+    reason = "Eight first-class inputs the caller picks independently; \
+              the dispatch on `fine_sdf_resolution_deg` happens here so \
+              callers stay single-line."
 )]
 pub fn run_search_blocking_with_baked(
     baked: BakedWindMap,
@@ -204,11 +206,64 @@ pub fn run_search_blocking_with_baked(
     ship: Boat,
     weights: SearchWeights,
     sdf_resolution_deg: f64,
+    fine_sdf_resolution_deg: Option<f64>,
 ) -> Result<SearchResult, SearchError> {
     let search_start = std::time::Instant::now();
-    let land = landmass_grid_at_resolution(sdf_resolution_deg);
-    // `best_fit` rides out of the macro so the `NoFeasibleRoute`
-    // check below doesn't need to know the const-generic N.
+    match fine_sdf_resolution_deg {
+        None => {
+            let land = landmass_grid_at_resolution(sdf_resolution_deg);
+            run_search_inner(
+                baked,
+                route_bounds,
+                waypoint_count,
+                search_settings,
+                ship,
+                weights,
+                land,
+                search_start,
+            )
+        }
+        Some(fine) => {
+            let land = landmass_grid_two_tier(sdf_resolution_deg, fine);
+            run_search_inner(
+                baked,
+                route_bounds,
+                waypoint_count,
+                search_settings,
+                ship,
+                weights,
+                land,
+                search_start,
+            )
+        }
+    }
+}
+
+/// Generic search driver shared by the single-tier and two-tier code
+/// paths in [`run_search_blocking_with_baked`]. Parameterised over the
+/// concrete [`LandmassSource`] so the same body works for either
+/// `&LandmassGrid` or `&TwoTierLandmass`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the outer entry point partitions inputs by ownership; \
+              bundling them here would add a struct just to relocate them."
+)]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "debug_assertions-only NaN guards catch upstream bugs before \
+              they corrupt downstream rendering; release builds compile \
+              them out."
+)]
+fn run_search_inner<LS: LandmassSource>(
+    baked: BakedWindMap,
+    route_bounds: RouteBounds,
+    waypoint_count: WaypointCount,
+    search_settings: SearchSettings,
+    ship: Boat,
+    weights: SearchWeights,
+    land: &LS,
+    search_start: std::time::Instant,
+) -> Result<SearchResult, SearchError> {
     let (route_evolution, boat, benchmark, best_fit) = waypoint_match!(waypoint_count, N, wrap, {
         let fit_calc = SailboatFitCalc::<N, _, _, _> {
             time_weight: weights.time_weight,
@@ -254,9 +309,6 @@ pub fn run_search_blocking_with_baked(
         );
         (wrap(evolution), ship, benchmark, gbest.best_fit)
     });
-    // Non-finite gbest = every particle hit a physically-infeasible
-    // segment (pole-lock, unsailable, etc. → `-INFINITY` propagated
-    // through `TimeBoundary`). `is_finite` rejects `±INF` and `NaN`.
     if !best_fit.is_finite() {
         return Err(SearchError::NoFeasibleRoute { best_fit });
     }
@@ -274,6 +326,11 @@ pub fn run_search_blocking_with_baked(
 
 /// Time-only PSO. Re-optimises `path.t` with `path.xy` held fixed.
 /// Pass [`crate::SDF_RESOLUTION_DEG`] for the default landmass grid.
+/// `fine_sdf_resolution_deg = Some(f)` opts into the two-tier landmass.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Eight first-class inputs the caller picks independently."
+)]
 pub fn run_time_reopt_blocking<const N: usize>(
     baked: &BakedWindMap,
     route_bounds: RouteBounds,
@@ -282,8 +339,29 @@ pub fn run_time_reopt_blocking<const N: usize>(
     fixed_path: Path<N>,
     weights: SearchWeights,
     sdf_resolution_deg: f64,
+    fine_sdf_resolution_deg: Option<f64>,
 ) -> Path<N> {
-    let land = landmass_grid_at_resolution(sdf_resolution_deg);
+    match fine_sdf_resolution_deg {
+        None => {
+            let land = landmass_grid_at_resolution(sdf_resolution_deg);
+            run_time_reopt_inner(baked, route_bounds, settings, ship, fixed_path, weights, land)
+        }
+        Some(fine) => {
+            let land = landmass_grid_two_tier(sdf_resolution_deg, fine);
+            run_time_reopt_inner(baked, route_bounds, settings, ship, fixed_path, weights, land)
+        }
+    }
+}
+
+fn run_time_reopt_inner<const N: usize, LS: LandmassSource>(
+    baked: &BakedWindMap,
+    route_bounds: RouteBounds,
+    settings: SearchSettings,
+    ship: &Boat,
+    fixed_path: Path<N>,
+    weights: SearchWeights,
+    land: &LS,
+) -> Path<N> {
     let fit_calc = SailboatFitCalc {
         time_weight: weights.time_weight,
         fuel_weight: weights.fuel_weight,
