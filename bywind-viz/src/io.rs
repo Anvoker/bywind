@@ -225,6 +225,7 @@ impl BywindApp {
                 path_kick_probability: Some(self.search.path_kick_probability),
                 path_kick_gamma_0_fraction: Some(self.search.path_kick_gamma_0_fraction),
                 path_kick_gamma_min_fraction: Some(self.search.path_kick_gamma_min_fraction),
+                sdf_resolution_deg: Some(self.search.sdf_resolution_deg),
                 seed: self.search.seed,
                 topology: Some(self.search.topology),
             },

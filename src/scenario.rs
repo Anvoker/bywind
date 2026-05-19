@@ -102,6 +102,14 @@ pub struct SearchOverrides {
     pub path_kick_gamma_0_fraction: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub path_kick_gamma_min_fraction: Option<f64>,
+    /// Landmass SDF cell size in degrees. `None` keeps the default
+    /// (0.5°). Finer values resolve narrow coastline features and
+    /// shrink the carve-out tubes' visual smear, at quadratic memory
+    /// cost and ~2× per-search slowdown per halving (see the
+    /// `sdf_quality_bench` numbers — 0.5° → 0.2° costs ~25% search
+    /// time without improving mean fitness).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sdf_resolution_deg: Option<f64>,
     /// Optional RNG seed for deterministic search runs. `None` (the
     /// default) draws fresh OS entropy. Used by the PSO-tuning study.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -495,6 +503,9 @@ impl SearchOverrides {
         if other.path_kick_gamma_min_fraction.is_some() {
             self.path_kick_gamma_min_fraction = other.path_kick_gamma_min_fraction;
         }
+        if other.sdf_resolution_deg.is_some() {
+            self.sdf_resolution_deg = other.sdf_resolution_deg;
+        }
         if other.seed.is_some() {
             self.seed = other.seed;
         }
@@ -536,6 +547,9 @@ impl SearchOverrides {
         }
         if let Some(v) = self.path_kick_gamma_min_fraction {
             cfg.path_kick_gamma_min_fraction = v;
+        }
+        if let Some(v) = self.sdf_resolution_deg {
+            cfg.sdf_resolution_deg = v;
         }
         if let Some(v) = self.seed {
             cfg.seed = Some(v);
@@ -817,6 +831,15 @@ mod tests {
         assert!((cfg.path_kick_probability - 0.25).abs() < 1e-12);
         assert!((cfg.path_kick_gamma_0_fraction - 0.1).abs() < 1e-12);
         assert!((cfg.path_kick_gamma_min_fraction - 0.01).abs() < 1e-12);
+    }
+
+    #[test]
+    fn search_apply_to_writes_sdf_resolution_deg() {
+        let overrides: SearchOverrides =
+            toml::from_str("sdf_resolution_deg = 0.1\n").expect("valid");
+        let mut cfg = SearchConfig::default();
+        overrides.apply_to(&mut cfg);
+        assert!((cfg.sdf_resolution_deg - 0.1).abs() < 1e-12);
     }
 
     #[test]
