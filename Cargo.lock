@@ -710,6 +710,7 @@ name = "bywind-dev"
 version = "0.1.2"
 dependencies = [
  "bywind",
+ "swarmkit-sailing",
 ]
 
 [[package]]
