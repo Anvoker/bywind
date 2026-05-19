@@ -143,6 +143,16 @@ impl BywindApp {
             // each vertex on draw via `map_to_screen`.
             draw_coastlines(ui.painter(), &view, crate::coastlines::landmasses());
 
+            // Optional diagnostic: paint the rasterised + carved SDF cells
+            // over the coastlines so the user can see exactly which cells
+            // the search considers sea. The grid build is cached in
+            // `OnceLock`, so toggling the overlay just iterates visible
+            // cells — no per-toggle setup cost.
+            if self.view.show_sdf_overlay {
+                let grid = bywind::landmass_grid_at_resolution(self.search.sdf_resolution_deg);
+                crate::draw::draw_sdf_overlay(ui.painter(), &view, grid);
+            }
+
             // On-map waypoint labels: nothing in "Show all particles" (text
             // would just stack illegibly across the cloud). With the Set
             // Time From Waypoint tool, show cumulative arrival time + frame

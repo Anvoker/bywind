@@ -614,8 +614,25 @@ impl LandmassGrid {
         i.rem_euclid(self.width as isize) as usize
     }
 
+    /// Cell size in degrees of lon / lat.
+    pub fn cell_deg(&self) -> f64 {
+        self.cell_deg
+    }
+
+    /// Grid dimensions in cells: `(width, height)` along lon and lat.
+    pub fn dims(&self) -> (usize, usize) {
+        (self.width, self.height)
+    }
+
+    /// Signed distance at cell `(i, j)`, in metres. Negative inside
+    /// land, positive over water, zero on the cell-precision coastline.
+    /// Out-of-range indices panic.
+    pub fn sdf_at_cell(&self, i: usize, j: usize) -> f32 {
+        self.sdf_m[self.cell_idx(i, j)]
+    }
+
     /// Centre `(lon°, lat°)` of cell `(i, j)`.
-    fn cell_centre(&self, i: usize, j: usize) -> LatLon {
+    pub fn cell_centre(&self, i: usize, j: usize) -> LatLon {
         let lon = -180.0 + (i as f64 + 0.5) * self.cell_deg;
         let lat = -90.0 + (j as f64 + 0.5) * self.cell_deg;
         LatLon::new(lon, lat)

@@ -524,6 +524,12 @@ impl BywindApp {
             });
         }
         ui.checkbox(&mut self.view.show_all_particles, "Show all particles");
+        ui.checkbox(&mut self.view.show_sdf_overlay, "Show SDF cells")
+            .on_hover_text(
+                "Overlay the rasterised landmass SDF on top of the coastlines. \
+                 Blue cells are sea, red are land — diagnostic for why a route \
+                 the search reports as 0 land visibly clips coastline.",
+            );
 
         egui::CollapsingHeader::new("Parameters")
             .default_open(false)

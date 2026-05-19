@@ -341,6 +341,142 @@ fn shift_x(p: egui::Pos2, dx: f32) -> egui::Pos2 {
     egui::Pos2::new(p.x + dx, p.y)
 }
 
+/// Overlay the rasterised landmass SDF on top of the coastlines.
+///
+/// Diagnostic for the "PSO route reports 0 land but visibly clips
+/// coastline" mismatch: the search reads the cell-level rasterised mask
+/// (which the strait carve-outs widen into capsule-shaped sea tubes),
+/// but the renderer draws the full-resolution Natural Earth polygons.
+/// Painting both lets the user see exactly which cells the search
+/// considers sea regardless of what the polygons say underneath.
+///
+/// Cells are axis-aligned rectangles of constant pixel width / height
+/// per frame (equirectangular is affine), so the per-cell cost is just
+/// four vertex inserts plus two triangle indices — no projection inside
+/// the loop. Sea cells paint translucent blue, land cells translucent
+/// red; alpha is flat (not SDF-magnitude-modulated) so the mask reads
+/// as a discrete tint at a glance.
+pub(crate) fn draw_sdf_overlay(
+    painter: &egui::Painter,
+    view: &ViewTransform,
+    grid: &bywind::landmass::LandmassGrid,
+) {
+    let cell_deg = grid.cell_deg();
+    let (width, height) = grid.dims();
+    let clip = painter.clip_rect();
+    let world_width_px = world_width_pixels(view);
+
+    // Pixel dimensions of one cell. `map_to_screen` is affine, so a fixed
+    // (Δlon, Δlat) gives a fixed (Δx, Δy) — compute once outside the loop.
+    let origin_px = view.map_to_screen(egui::Pos2::new(0.0, 0.0));
+    let unit_px = view.map_to_screen(egui::Pos2::new(cell_deg as f32, cell_deg as f32));
+    let cell_w_px = unit_px.x - origin_px.x; // > 0
+    let cell_h_px = origin_px.y - unit_px.y; // > 0 (screen y grows down, lat grows up)
+
+    if cell_w_px.abs() < 0.5 || cell_h_px.abs() < 0.5 {
+        // Cells are sub-pixel; rendering would just paint a uniform
+        // wash that adds nothing diagnostic. Bail out — the user can
+        // zoom in to see the mask.
+        return;
+    }
+
+    // Project the (cell 0, 0) lower-left corner once. Every other cell
+    // is at integer offsets from this anchor.
+    let anchor = view.map_to_screen(egui::Pos2::new(-180.0, -90.0));
+
+    // Visible cell-index range. Use the inverse of the per-cell anchor
+    // arithmetic so the range tracks pan/zoom exactly.
+    let i_from_x = |x: f32| ((x - anchor.x) / cell_w_px).floor() as isize;
+    let j_from_y = |y: f32| {
+        // Screen y grows downward → smaller y = larger j.
+        ((anchor.y - y) / cell_h_px).floor() as isize
+    };
+    let j_lo = j_from_y(clip.max.y + cell_h_px).max(0) as usize;
+    let j_hi = ((j_from_y(clip.min.y - cell_h_px) + 1) as usize).min(height);
+    if j_lo >= j_hi {
+        return;
+    }
+
+    let sea_color = egui::Color32::from_rgba_premultiplied(60, 120, 200, 70);
+    let land_color = egui::Color32::from_rgba_premultiplied(200, 80, 60, 70);
+    // Cell-boundary lines — without them adjacent same-type cells merge
+    // into one blob and the grid structure is invisible. Skip the lines
+    // when cells are too small to draw a useful border (saves stroke
+    // tessellation and avoids the grid blurring into a wash).
+    let draw_grid_lines = cell_w_px >= 6.0 && cell_h_px >= 6.0;
+    let line_stroke = egui::Stroke::new(
+        0.5,
+        egui::Color32::from_rgba_premultiplied(0, 0, 0, 90),
+    );
+
+    let mut mesh = egui::Mesh::default();
+    for shift in shadow_offsets(world_width_px) {
+        if !shift.is_finite() {
+            continue;
+        }
+        mesh.vertices.clear();
+        mesh.indices.clear();
+
+        // Lon range in *this* shadow tile. Cells outside the panel get
+        // skipped by clamping to the grid's i-range plus the tile's
+        // own x-extent.
+        let i_lo = i_from_x(clip.min.x - shift - cell_w_px).max(0) as usize;
+        let i_hi = ((i_from_x(clip.max.x - shift + cell_w_px) + 1) as usize).min(width);
+        if i_lo >= i_hi {
+            continue;
+        }
+
+        for j in j_lo..j_hi {
+            let y_bot = anchor.y - (j as f32) * cell_h_px;
+            let y_top = y_bot - cell_h_px;
+            if y_bot < clip.min.y - 2.0 || y_top > clip.max.y + 2.0 {
+                continue;
+            }
+            for i in i_lo..i_hi {
+                let x_left = anchor.x + (i as f32) * cell_w_px + shift;
+                let x_right = x_left + cell_w_px;
+                let sdf = grid.sdf_at_cell(i, j);
+                let color = if sdf >= 0.0 { sea_color } else { land_color };
+                let idx = mesh.vertices.len() as u32;
+                mesh.colored_vertex(egui::Pos2::new(x_left, y_top), color);
+                mesh.colored_vertex(egui::Pos2::new(x_right, y_top), color);
+                mesh.colored_vertex(egui::Pos2::new(x_right, y_bot), color);
+                mesh.colored_vertex(egui::Pos2::new(x_left, y_bot), color);
+                mesh.add_triangle(idx, idx + 1, idx + 2);
+                mesh.add_triangle(idx, idx + 2, idx + 3);
+            }
+        }
+        if !mesh.vertices.is_empty() {
+            painter.add(egui::Shape::mesh(std::mem::take(&mut mesh)));
+        }
+
+        // Grid lines as horizontal / vertical strokes spanning the
+        // visible cell range. Drawing per-row + per-column strokes once
+        // each is much cheaper than emitting four edges per cell, and
+        // shared edges aren't double-drawn.
+        if draw_grid_lines {
+            let x_left = anchor.x + (i_lo as f32) * cell_w_px + shift;
+            let x_right = anchor.x + (i_hi as f32) * cell_w_px + shift;
+            let y_top_line = anchor.y - (j_hi as f32) * cell_h_px;
+            let y_bot_line = anchor.y - (j_lo as f32) * cell_h_px;
+            for i in i_lo..=i_hi {
+                let x = anchor.x + (i as f32) * cell_w_px + shift;
+                painter.line_segment(
+                    [egui::Pos2::new(x, y_top_line), egui::Pos2::new(x, y_bot_line)],
+                    line_stroke,
+                );
+            }
+            for j in j_lo..=j_hi {
+                let y = anchor.y - (j as f32) * cell_h_px;
+                painter.line_segment(
+                    [egui::Pos2::new(x_left, y), egui::Pos2::new(x_right, y)],
+                    line_stroke,
+                );
+            }
+        }
+    }
+}
+
 /// Conservative aabb-vs-rect intersection test for a triangle. False
 /// positives are fine (we'll just emit a culled mesh entry); false
 /// negatives would drop visible geometry.

@@ -214,6 +214,14 @@ pub(crate) struct ViewState {
     /// True → draw every particle's pbest; false → only the swarm best.
     pub(crate) show_all_particles: bool,
 
+    /// True → overlay the rasterised landmass SDF on top of the
+    /// coastline polygons. Diagnostic for understanding why a route
+    /// the system reports as 0 land visibly clips through coastline
+    /// (the cell-level mask + carve-out tubes are coarser than the
+    /// rendered polygons; the overlay shows exactly what the search
+    /// considers sea).
+    pub(crate) show_sdf_overlay: bool,
+
     /// True formats route time as `Nd Nh Nm Ns`; false as raw seconds.
     /// Right-click on the Summary heading toggles.
     pub(crate) total_time_breakdown: bool,
@@ -277,6 +285,7 @@ impl Default for ViewState {
         Self {
             render_scale: 1e-4,
             show_all_particles: false,
+            show_sdf_overlay: false,
             total_time_breakdown: true,
             total_fuel_tonnes: true,
             pan_offset: egui::Vec2::ZERO,
