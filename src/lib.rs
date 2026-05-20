@@ -101,7 +101,7 @@ pub use swarmkit_sailing::{
 pub use config::{BoatConfig, GenerateConfig, RobustMode, SearchConfig};
 pub use ensemble::{BakedEnsembleWindMap, TimedEnsembleWindMap};
 pub use search::{
-    EnsembleMode, WindInput,
+    EnsembleAssessment, EnsembleMode, MemberMetrics, WindInput,
 };
 pub use search::{
     BAKE_STEP, SearchError, SearchResult, SearchWeights, run_search_blocking,

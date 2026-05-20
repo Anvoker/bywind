@@ -22,10 +22,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow};
 use bywind::{
-    BakedWindMap, BenchmarkRoute, BoatConfig, LonLatBbox, MapBounds, RouteBounds, RouteEvolution,
-    SavedSolution, SearchConfig, SearchResult, SearchWeights, SegmentMetrics, WaypointCount,
-    baked_codec, derive_route_bbox, format_bbox_flag, gbest_segment_metrics, landmass_grid,
-    run_search_blocking, run_search_blocking_with_baked,
+    BakedWindMap, BenchmarkRoute, BoatConfig, EnsembleAssessment, LonLatBbox, MapBounds,
+    RouteBounds, RouteEvolution, SavedSolution, SearchConfig, SearchResult, SearchWeights,
+    SegmentMetrics, WaypointCount, baked_codec, derive_route_bbox, format_bbox_flag,
+    gbest_segment_metrics, landmass_grid, run_search_blocking, run_search_blocking_with_baked,
 };
 
 use bywind::fmt::{format_duration_breakdown, format_fuel_auto, format_land_km, format_pso_delta};
@@ -200,6 +200,7 @@ pub fn run(args: &SearchArgs) -> Result<(), AppError> {
         benchmark,
         bake_duration: bake_dur,
         search_duration: search_dur,
+        ensemble,
     } = with_progress_watcher(|| {
         execute_search(
             source,
@@ -230,6 +231,7 @@ pub fn run(args: &SearchArgs) -> Result<(), AppError> {
         &saved,
         &segment_stats,
         benchmark.as_ref(),
+        ensemble.as_ref(),
         bake_dur,
         search_dur,
         total_dur,
@@ -681,6 +683,7 @@ fn print_summary(
     saved: &SavedSolution,
     segment_stats: &[SegmentMetrics],
     benchmark: Option<&BenchmarkRoute>,
+    ensemble: Option<&EnsembleAssessment>,
     bake_dur: std::time::Duration,
     search_dur: std::time::Duration,
     total_dur: std::time::Duration,
@@ -731,6 +734,39 @@ fn print_summary(
         eprintln!(
             "(no A* benchmark — endpoints may be landlocked or no sea path inside the bounds)"
         );
+    }
+
+    if let Some(ens) = ensemble {
+        let k = ens.per_member.len();
+        let (fit_mean, fit_min, fit_max, fit_sd) = ens.stats(|m| m.fitness);
+        let (time_mean, time_min, time_max, time_sd) = ens.stats(|m| m.time_s);
+        let (fuel_mean, fuel_min, fuel_max, fuel_sd) = ens.stats(|m| m.fuel_kg);
+
+        eprintln!();
+        eprintln!("=== Ensemble spread on gbest path (K={k}) ===");
+        eprintln!("Fit:  mean={fit_mean:.4}  min={fit_min:.4}  max={fit_max:.4}  sd={fit_sd:.4}");
+        let time_mean_s = format_duration_breakdown(time_mean);
+        let time_min_s = format_duration_breakdown(time_min);
+        let time_max_s = format_duration_breakdown(time_max);
+        eprintln!("Time: mean={time_mean_s}  min={time_min_s}  max={time_max_s}  sd={time_sd:.0}s");
+        let fuel_mean_s = format_fuel_auto(fuel_mean);
+        let fuel_min_s = format_fuel_auto(fuel_min);
+        let fuel_max_s = format_fuel_auto(fuel_max);
+        let fuel_sd_s = format_fuel_auto(fuel_sd);
+        eprintln!("Fuel: mean={fuel_mean_s}  min={fuel_min_s}  max={fuel_max_s}  sd={fuel_sd_s}");
+
+        let worst = ens
+            .per_member
+            .iter()
+            .min_by(|a, b| a.fitness.partial_cmp(&b.fitness).unwrap_or(std::cmp::Ordering::Equal));
+        let best = ens
+            .per_member
+            .iter()
+            .max_by(|a, b| a.fitness.partial_cmp(&b.fitness).unwrap_or(std::cmp::Ordering::Equal));
+        if let (Some(w), Some(b)) = (worst, best) {
+            eprintln!("Worst-case member: {} (fit {:.4})", w.name, w.fitness);
+            eprintln!("Best-case member:  {} (fit {:.4})", b.name, b.fitness);
+        }
     }
 }
 

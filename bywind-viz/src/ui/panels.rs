@@ -151,7 +151,93 @@ impl BywindApp {
                     ui.end_row();
                 });
         }
+        if let Some(ens) = self.outputs.ensemble.as_ref() {
+            self.render_ensemble_spread(ui, ens, segment_in_tonnes);
+        }
         toggle_summary
+    }
+
+    /// Per-member spread for the converged gbest path under an ensemble
+    /// search. Mean / min / max / sd of fitness, time, and fuel across
+    /// members, plus the best- and worst-case member names — narrow
+    /// spread → robust; wide spread → brittle.
+    fn render_ensemble_spread(
+        &self,
+        ui: &mut egui::Ui,
+        ens: &bywind::EnsembleAssessment,
+        segment_in_tonnes: bool,
+    ) {
+        let k = ens.per_member.len();
+        if k == 0 {
+            return;
+        }
+        let (fit_mean, fit_min, fit_max, fit_sd) = ens.stats(|m| m.fitness);
+        let (time_mean, time_min, time_max, time_sd) = ens.stats(|m| m.time_s);
+        let (fuel_mean, fuel_min, fuel_max, fuel_sd) = ens.stats(|m| m.fuel_kg);
+        let fmt_time = |t: f64| {
+            if self.view.total_time_breakdown {
+                format_duration_breakdown(t)
+            } else {
+                format!("{t:.1}s")
+            }
+        };
+        let fmt_fit = |f: f64| {
+            if self.view.total_time_breakdown {
+                format_fitness_magnitude(f)
+            } else {
+                format!("{f:.4}")
+            }
+        };
+        ui.separator();
+        ui.label(egui::RichText::new(format!("Ensemble spread (K={k})")).strong());
+        egui::Grid::new("ensemble_spread_grid")
+            .num_columns(2)
+            .spacing([12.0, 4.0])
+            .show(ui, |ui| {
+                ui.label("Fit  (mean / sd):");
+                ui.label(format!("{}  ± {}", fmt_fit(fit_mean), fmt_fit(fit_sd)));
+                ui.end_row();
+                ui.label("Fit  (min / max):");
+                ui.label(format!("{} / {}", fmt_fit(fit_min), fmt_fit(fit_max)));
+                ui.end_row();
+                ui.label("Time (mean / sd):");
+                ui.label(format!("{}  ± {:.0}s", fmt_time(time_mean), time_sd));
+                ui.end_row();
+                ui.label("Time (min / max):");
+                ui.label(format!("{} / {}", fmt_time(time_min), fmt_time(time_max)));
+                ui.end_row();
+                ui.label("Fuel (mean / sd):");
+                ui.label(format!(
+                    "{}  ± {}",
+                    format_fuel(fuel_mean, segment_in_tonnes),
+                    format_fuel(fuel_sd, segment_in_tonnes),
+                ));
+                ui.end_row();
+                ui.label("Fuel (min / max):");
+                ui.label(format!(
+                    "{} / {}",
+                    format_fuel(fuel_min, segment_in_tonnes),
+                    format_fuel(fuel_max, segment_in_tonnes),
+                ));
+                ui.end_row();
+            });
+        let worst = ens
+            .per_member
+            .iter()
+            .min_by(|a, b| a.fitness.partial_cmp(&b.fitness).unwrap_or(std::cmp::Ordering::Equal));
+        let best = ens
+            .per_member
+            .iter()
+            .max_by(|a, b| a.fitness.partial_cmp(&b.fitness).unwrap_or(std::cmp::Ordering::Equal));
+        if let (Some(w), Some(b)) = (worst, best) {
+            ui.label(format!(
+                "Worst: {} ({})    Best: {} ({})",
+                w.name,
+                fmt_fit(w.fitness),
+                b.name,
+                fmt_fit(b.fitness),
+            ));
+        }
     }
 
     fn render_segment_rows(&self, ui: &mut egui::Ui, stats: &[bywind::SegmentMetrics]) {

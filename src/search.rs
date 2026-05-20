@@ -6,7 +6,8 @@ use swarmkit::FitCalc as _;
 use swarmkit_sailing::{
     Boat, EnsembleSailboatFitCalc, LandmassSource, Path, PathBaseline, RobustObjective,
     RouteBounds, SailboatFitCalc, SeaPathBias, SearchSettings, get_segment_fuel_and_time,
-    get_segment_land_metres, reoptimize_times, search,
+    get_segment_land_metres, reoptimize_times, search, walk_segments_against_wind,
+    weighted_fitness,
 };
 
 use crate::ensemble::BakedEnsembleWindMap;
@@ -30,6 +31,60 @@ pub struct SearchResult {
     pub benchmark: Option<BenchmarkRoute>,
     pub bake_duration: std::time::Duration,
     pub search_duration: std::time::Duration,
+    /// `Some` for ensemble searches: K per-member evaluations of the
+    /// converged gbest path. `None` for single-deterministic.
+    pub ensemble: Option<EnsembleAssessment>,
+}
+
+/// Per-ensemble-member evaluation of the converged gbest path. Lets
+/// the UI show the spread (min / max / stddev) of fitness, time, and
+/// fuel across members so the user can judge how robust the route is
+/// — narrow spread → robust; wide spread → brittle.
+#[derive(Clone, Debug)]
+pub struct EnsembleAssessment {
+    pub per_member: Vec<MemberMetrics>,
+}
+
+/// One ensemble member's evaluation of the converged gbest route.
+/// `land_m` is shared across members (wind-independent) but stored
+/// per-member for symmetry with the aggregate display layer.
+#[derive(Clone, Debug)]
+pub struct MemberMetrics {
+    /// Filename stem of the source `.wcav`, e.g. `"gec00"` or
+    /// `"gep08"`. Lets the UI show "worst-case: gep23, best-case:
+    /// gec00" without making the user count indices.
+    pub name: String,
+    /// Travel time in seconds along the gbest path under this
+    /// member's wind.
+    pub time_s: f64,
+    /// Fuel consumed in kg.
+    pub fuel_kg: f64,
+    /// Over-land distance in metres. Wind-independent; same across
+    /// every member by construction. Replicated for display
+    /// uniformity.
+    pub land_m: f64,
+    /// Per-member fitness via `weighted_fitness(time, fuel, land,
+    /// time_weight, fuel_weight, land_weight)`. Negated cost — higher
+    /// is better.
+    pub fitness: f64,
+}
+
+impl EnsembleAssessment {
+    /// `(mean, min, max, stddev)` of `field` across members.
+    /// Returns `(NaN, NaN, NaN, NaN)` for an empty ensemble (which
+    /// shouldn't happen — `Self` is constructed with K ≥ 1).
+    pub fn stats<F: Fn(&MemberMetrics) -> f64>(&self, field: F) -> (f64, f64, f64, f64) {
+        let k = self.per_member.len();
+        if k == 0 {
+            return (f64::NAN, f64::NAN, f64::NAN, f64::NAN);
+        }
+        let values: Vec<f64> = self.per_member.iter().map(&field).collect();
+        let mean = values.iter().sum::<f64>() / k as f64;
+        let min = values.iter().copied().fold(f64::INFINITY, f64::min);
+        let max = values.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let var = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / k as f64;
+        (mean, min, max, var.sqrt())
+    }
 }
 
 /// Failure modes the blocking search entry points can return. Enum
@@ -424,6 +479,7 @@ fn run_search_inner<LS: LandmassSource>(
         benchmark,
         bake_duration: std::time::Duration::ZERO,
         search_duration,
+        ensemble: None,
     })
 }
 
@@ -466,7 +522,8 @@ fn run_search_inner_ensemble<LS: LandmassSource>(
     land: &LS,
     search_start: std::time::Instant,
 ) -> Result<SearchResult, SearchError> {
-    let (route_evolution, boat, benchmark, best_fit) = waypoint_match!(waypoint_count, N, wrap, {
+    let (route_evolution, boat, benchmark, best_fit, ensemble_assessment) =
+        waypoint_match!(waypoint_count, N, wrap, {
         let ensemble_fit_calc = EnsembleSailboatFitCalc::<N, _, _, _> {
             time_weight: weights.time_weight,
             fuel_weight: weights.fuel_weight,
@@ -527,7 +584,54 @@ fn run_search_inner_ensemble<LS: LandmassSource>(
             &bench_fit_calc,
             search_settings,
         );
-        (wrap(evolution), ship, benchmark, gbest.best_fit)
+        // Per-member assessment of the converged gbest path: evaluate
+        // the SAME route against each member's wind so the UI can show
+        // the spread (min / max / stddev) of time / fuel / fitness
+        // across the K-realisation distribution. Land penalty is
+        // wind-independent — compute once and replicate.
+        let gbest_pos = gbest.best_pos;
+        let land_m: f64 = (0..N - 1)
+            .map(|i| {
+                let a = gbest_pos.lat_lon(i);
+                let b = gbest_pos.lat_lon(i + 1);
+                get_segment_land_metres(land, a, b, route_bounds.step_distance_max)
+            })
+            .sum();
+        let per_member: Vec<MemberMetrics> = (0..ensemble.member_count())
+            .map(|k| {
+                let member = ensemble.member(k);
+                let (t, f) = walk_segments_against_wind(
+                    &ship,
+                    member,
+                    gbest_pos,
+                    0.0,
+                    route_bounds.step_distance_max,
+                );
+                let fitness = weighted_fitness(
+                    t,
+                    f,
+                    land_m,
+                    weights.time_weight,
+                    weights.fuel_weight,
+                    weights.land_weight,
+                );
+                MemberMetrics {
+                    name: ensemble.member_names()[k].clone(),
+                    time_s: t,
+                    fuel_kg: f,
+                    land_m,
+                    fitness,
+                }
+            })
+            .collect();
+        let ensemble_assessment = EnsembleAssessment { per_member };
+        (
+            wrap(evolution),
+            ship,
+            benchmark,
+            gbest.best_fit,
+            ensemble_assessment,
+        )
     });
     if !best_fit.is_finite() {
         return Err(SearchError::NoFeasibleRoute { best_fit });
@@ -541,6 +645,7 @@ fn run_search_inner_ensemble<LS: LandmassSource>(
         benchmark,
         bake_duration: std::time::Duration::ZERO,
         search_duration,
+        ensemble: Some(ensemble_assessment),
     })
 }
 

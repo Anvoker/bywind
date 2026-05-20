@@ -4,7 +4,7 @@
 //! mutate; this module owns only the value-side types those adapters
 //! produce.
 
-use bywind::{BakedWindMap, BenchmarkRoute, RouteEvolution, SegmentMetrics};
+use bywind::{BakedWindMap, BenchmarkRoute, EnsembleAssessment, RouteEvolution, SegmentMetrics};
 use swarmkit_sailing::{Boat, RouteBounds};
 
 /// Message sent from the time-reoptimization worker thread back to the UI on
@@ -58,6 +58,11 @@ pub(crate) struct SearchOutputs {
     /// for the requested origin / destination.
     #[serde(skip)]
     pub(crate) benchmark: Option<BenchmarkRoute>,
+
+    /// Per-member assessment of the gbest path from an ensemble
+    /// search. `None` for single-deterministic searches.
+    #[serde(skip)]
+    pub(crate) ensemble: Option<EnsembleAssessment>,
 
     /// Wall-clock duration of the last completed wind-map bake (the
     /// `BakedWindMap::from_timed_map` work that runs on the search worker

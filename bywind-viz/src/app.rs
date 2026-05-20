@@ -451,6 +451,7 @@ impl eframe::App for BywindApp {
                     benchmark,
                     bake_duration,
                     search_duration,
+                    ensemble,
                 }) => {
                     self.outputs.iteration = route_evolution.iter_count().saturating_sub(1);
                     self.outputs.route_evolution = Some(route_evolution);
@@ -460,6 +461,7 @@ impl eframe::App for BywindApp {
                     self.outputs.benchmark = benchmark;
                     self.outputs.bake_duration = Some(bake_duration);
                     self.outputs.search_duration = Some(search_duration);
+                    self.outputs.ensemble = ensemble;
                 }
                 Err(e) => {
                     // Prior outputs stay displayed — discarding them
