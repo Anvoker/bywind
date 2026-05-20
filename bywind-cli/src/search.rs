@@ -113,6 +113,25 @@ pub struct SearchArgs {
     /// omitted (the bake's bbox is derived from the cache file).
     #[arg(long, value_name = "PATH", conflicts_with = "save_baked")]
     pub load_baked: Option<PathBuf>,
+    /// Path to a directory of ensemble `.wcav` files (produced by
+    /// `bywind-cli fetch-ensemble`). When set, the search runs against
+    /// the K-member ensemble instead of a single wind map. Mutually
+    /// exclusive with `<MAP>` / `--load-baked`.
+    #[arg(long, value_name = "PATH", conflicts_with_all = ["save_baked", "load_baked"])]
+    pub ensemble: Option<PathBuf>,
+    /// Robust-fitness aggregation mode when `--ensemble` is set.
+    /// `full` runs the K-fold robust objective (currently mean); `fast-mean`
+    /// pre-computes a single mean wind map and runs the existing
+    /// single-deterministic search against it. `fast-mean` is much faster
+    /// but `E[f(x, wind)] ≠ f(x, E[wind])` in general, so the result is a
+    /// linearisation approximation. Default `full`.
+    #[arg(
+        long,
+        value_name = "MODE",
+        default_value = "full",
+        value_parser = clap::builder::PossibleValuesParser::new(["full", "fast-mean"]),
+    )]
+    pub robust_mode: String,
 }
 
 pub fn run(args: &SearchArgs) -> Result<(), AppError> {
@@ -126,17 +145,20 @@ pub fn run(args: &SearchArgs) -> Result<(), AppError> {
         search_cfg,
     } = resolved;
 
-    // Decide between bake-from-wind-map and load-baked-from-cache up front.
-    // The fresh-bake path retains the loaded `TimedWindMap` for the actual
-    // bake; the load-baked path goes straight to a `BakedWindMap`. Both
-    // produce a `MapBounds` so the `--bounds` clamp + route-bounds
-    // construction happens uniformly downstream.
-    let source = if let Some(baked_path) = &args.load_baked {
+    // Decide between bake-from-wind-map, load-baked-from-cache, and
+    // ensemble-of-wcav up front. The fresh-bake path retains the loaded
+    // `TimedWindMap` for the actual bake; the load-baked path goes
+    // straight to a `BakedWindMap`; the ensemble path loads all members
+    // and bakes each. Each route produces a `MapBounds` for the
+    // `--bounds` clamp + route-bounds construction downstream.
+    let source = if let Some(ensemble_path) = &args.ensemble {
+        WindSource::Ensemble(load_ensemble_with_log(ensemble_path)?)
+    } else if let Some(baked_path) = &args.load_baked {
         WindSource::Cached(read_baked_with_log(baked_path)?)
     } else {
         let map_path = map_path.as_deref().ok_or_else(|| {
             AppError::from(anyhow!(
-                "no map specified (pass <MAP>, set [run].map in a --config file, or use --load-baked <PATH>)",
+                "no map specified (pass <MAP>, set [run].map in a --config file, or use --load-baked <PATH>, or use --ensemble <DIR>)",
             ))
         })?;
         WindSource::Fresh(load_wind_map_with_log(map_path)?)
@@ -187,6 +209,7 @@ pub fn run(args: &SearchArgs) -> Result<(), AppError> {
             &search_cfg,
             weights,
             args.save_baked.as_deref(),
+            args.robust_mode.as_str(),
         )
     })?;
     let total_dur = total_start.elapsed();
@@ -265,6 +288,7 @@ fn with_progress_watcher<R>(f: impl FnOnce() -> R) -> R {
 enum WindSource {
     Fresh(bywind::TimedWindMap),
     Cached(BakedWindMap),
+    Ensemble(bywind::TimedEnsembleWindMap),
 }
 
 impl WindSource {
@@ -280,8 +304,32 @@ impl WindSource {
                 bbox: LonLatBbox::new(0.0, 0.0, 0.0, 0.0),
             }),
             Self::Cached(baked) => map_bounds_from_baked(baked),
+            // For the ensemble path, every member shares the same
+            // source-map extent (they came from the same cycle); use
+            // member 0 as the representative.
+            Self::Ensemble(ens) => ens
+                .members()
+                .first()
+                .and_then(MapBounds::from_wind_map)
+                .unwrap_or(MapBounds {
+                    bbox: LonLatBbox::new(0.0, 0.0, 0.0, 0.0),
+                }),
         }
     }
+}
+
+fn load_ensemble_with_log(dir: &Path) -> Result<bywind::TimedEnsembleWindMap, AppError> {
+    eprintln!("loading ensemble from {}...", dir.display());
+    let load_start = Instant::now();
+    let ensemble = bywind::TimedEnsembleWindMap::load_dir(dir)
+        .map_err(|e| anyhow!("loading ensemble from {}: {e}", dir.display()))?;
+    eprintln!(
+        "  loaded in {:.2}s: {} members ({})",
+        load_start.elapsed().as_secs_f64(),
+        ensemble.member_count(),
+        ensemble.member_names().join(", "),
+    );
+    Ok(ensemble)
 }
 
 fn load_wind_map_with_log(map_path: &Path) -> Result<bywind::TimedWindMap, AppError> {
@@ -396,6 +444,10 @@ fn write_baked_with_log(path: &Path, baked: &BakedWindMap) -> Result<(), AppErro
 /// Run the search via the appropriate bywind entry point depending on the
 /// `WindSource` variant. Saves the baked grid when `save_baked` is set
 /// (only meaningful on the fresh-bake path).
+#[expect(
+    clippy::too_many_arguments,
+    reason = "ensemble dispatch adds one mode-selector arg; bundling would just relocate"
+)]
 fn execute_search(
     source: WindSource,
     map_bounds: &MapBounds,
@@ -404,10 +456,11 @@ fn execute_search(
     search_cfg: &SearchConfig,
     weights: SearchWeights,
     save_baked: Option<&Path>,
+    robust_mode: &str,
 ) -> Result<SearchResult, AppError> {
     match source {
         WindSource::Cached(baked) => run_search_blocking_with_baked(
-            baked,
+            bywind::WindInput::single(baked),
             route_bounds,
             search_cfg.waypoint_count,
             search_cfg.to_search_settings(),
@@ -435,6 +488,38 @@ fn execute_search(
                 write_baked_with_log(save_path, &result.baked)?;
             }
             Ok(result)
+        }
+        WindSource::Ensemble(ensemble) => {
+            let bake_bounds = map_bounds.to_bake_bounds(search_cfg.bake_step_deg);
+            eprintln!(
+                "baking {} ensemble members against {:?}...",
+                ensemble.member_count(),
+                bake_bounds.bbox,
+            );
+            let bake_start = Instant::now();
+            let baked_ensemble = ensemble.bake(bake_bounds);
+            eprintln!(
+                "  baked in {:.2}s",
+                bake_start.elapsed().as_secs_f64(),
+            );
+            let wind_input = if robust_mode == "fast-mean" {
+                eprintln!("using fast-mean mode (single-deterministic against ensemble mean)");
+                bywind::WindInput::ensemble_fast_mean(baked_ensemble)
+            } else {
+                eprintln!("using full K-fold robust fitness (objective: mean)");
+                bywind::WindInput::ensemble_full(baked_ensemble)
+            };
+            run_search_blocking_with_baked(
+                wind_input,
+                route_bounds,
+                search_cfg.waypoint_count,
+                search_cfg.to_search_settings(),
+                boat_cfg.to_boat(),
+                weights,
+                search_cfg.sdf_resolution_deg,
+                search_cfg.fine_sdf_resolution_deg,
+            )
+            .map_err(|e| AppError::no_result(anyhow!("{e}")))
         }
     }
 }

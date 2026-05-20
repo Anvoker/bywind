@@ -166,7 +166,7 @@ fn run_scenario(scenario: &Scenario, wind: &TimedWindMap) {
             let ship = boat_cfg().to_boat();
             let start = Instant::now();
             let result = run_search_blocking_with_baked(
-                baked.take().expect("baked threaded"),
+                bywind::WindInput::single(baked.take().expect("baked threaded")),
                 route_bounds,
                 cfg.waypoint_count,
                 settings,

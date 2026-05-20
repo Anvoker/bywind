@@ -2466,8 +2466,11 @@ mod tests {
         // unified coarse + fine cell graph so the polyline threads
         // narrow fine tubes inside fine patches.
         let two_tier = landmass_grid_two_tier(0.5, 0.1);
-        let origin = LatLon::new(33.226_245_880_126_953, 43.453_300_476_074_22);
-        let destination = LatLon::new(-10.553_238_868_713_379, 35.199_138_641_357_42);
+        // f32-precision values from the scenario-2 TOML (the original
+        // fixtures), widened to f64 here. Trimmed to f32-representable
+        // digits to satisfy `clippy::excessive_precision`.
+        let origin = LatLon::new(33.226_246, 43.453_3);
+        let destination = LatLon::new(-10.553_239, 35.199_14);
         let bounds = RouteBounds::new(
             origin,
             destination,

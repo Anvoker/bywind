@@ -257,7 +257,7 @@ fn run_route(
         let seed_start = Instant::now();
         search_cfg.seed = Some(seed);
         let result = run_search_blocking_with_baked(
-            baked,
+            bywind::WindInput::single(baked),
             route_bounds,
             search_cfg.waypoint_count,
             search_cfg.to_search_settings(),

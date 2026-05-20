@@ -4,10 +4,12 @@
 
 use swarmkit::FitCalc as _;
 use swarmkit_sailing::{
-    Boat, LandmassSource, Path, PathBaseline, RouteBounds, SailboatFitCalc, SeaPathBias,
-    SearchSettings, get_segment_fuel_and_time, get_segment_land_metres, reoptimize_times, search,
+    Boat, EnsembleSailboatFitCalc, LandmassSource, Path, PathBaseline, RobustObjective,
+    RouteBounds, SailboatFitCalc, SeaPathBias, SearchSettings, get_segment_fuel_and_time,
+    get_segment_land_metres, reoptimize_times, search,
 };
 
+use crate::ensemble::BakedEnsembleWindMap;
 use crate::landmass::{landmass_grid_at_resolution, landmass_grid_two_tier};
 use crate::route::{BenchmarkRoute, RouteEvolution, WaypointCount, debug_assert_path_no_nans};
 use crate::waypoint_match;
@@ -171,7 +173,7 @@ pub fn run_search_blocking(
     let baked = wind_map.bake(bake_bounds);
     let bake_duration = bake_start.elapsed();
     let mut result = run_search_blocking_with_baked(
-        baked,
+        WindInput::single(baked),
         route_bounds,
         waypoint_count,
         search_settings,
@@ -183,6 +185,62 @@ pub fn run_search_blocking(
     // Inner call zero-init'd `bake_duration`; patch in the real value.
     result.bake_duration = bake_duration;
     Ok(result)
+}
+
+/// Per-search wind input: a single deterministic baked map, or an
+/// ensemble of K baked members alongside a precomputed mean used for
+/// the benchmark and fast-mode shortcut.
+pub enum WindInput {
+    /// One pre-baked wind map. Existing single-deterministic path.
+    Single(BakedWindMap),
+    /// Ensemble of K members + their pre-computed mean.
+    Ensemble {
+        ensemble: BakedEnsembleWindMap,
+        mean: BakedWindMap,
+        mode: EnsembleMode,
+    },
+}
+
+/// Aggregation strategy for ensemble fitness.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum EnsembleMode {
+    /// `K`-fold per-particle fitness reduced via [`RobustObjective`]
+    /// (currently `Mean`). Benchmark route uses the precomputed mean
+    /// wind for the time-PSO refinement (cheaper than K-fold inside
+    /// the inner loop; documents the bench as "mean-wind reference").
+    Full,
+    /// Skip the K-fold loop entirely; run the existing single-
+    /// deterministic search against the precomputed mean wind map.
+    /// `E[f(x, wind)] ≠ f(x, E[wind])` in general but for linear-
+    /// polar regimes the gap is typically <1%. Massive speedup.
+    FastMean,
+}
+
+impl WindInput {
+    /// Convenience: wrap a single baked map.
+    pub fn single(baked: BakedWindMap) -> Self {
+        Self::Single(baked)
+    }
+    /// Convenience: wrap an ensemble in `Full` mode (computes the
+    /// mean once and stashes it for the bench).
+    pub fn ensemble_full(ensemble: BakedEnsembleWindMap) -> Self {
+        let mean = ensemble.mean();
+        Self::Ensemble {
+            ensemble,
+            mean,
+            mode: EnsembleMode::Full,
+        }
+    }
+    /// Convenience: wrap an ensemble in `FastMean` mode (computes the
+    /// mean once and runs the search against it).
+    pub fn ensemble_fast_mean(ensemble: BakedEnsembleWindMap) -> Self {
+        let mean = ensemble.mean();
+        Self::Ensemble {
+            ensemble,
+            mean,
+            mode: EnsembleMode::FastMean,
+        }
+    }
 }
 
 /// Variant taking a pre-baked wind field. Used by `bywind-cli`'s
@@ -199,7 +257,7 @@ pub fn run_search_blocking(
               callers stay single-line."
 )]
 pub fn run_search_blocking_with_baked(
-    baked: BakedWindMap,
+    wind: WindInput,
     route_bounds: RouteBounds,
     waypoint_count: WaypointCount,
     search_settings: SearchSettings,
@@ -209,33 +267,78 @@ pub fn run_search_blocking_with_baked(
     fine_sdf_resolution_deg: Option<f64>,
 ) -> Result<SearchResult, SearchError> {
     let search_start = std::time::Instant::now();
-    match fine_sdf_resolution_deg {
-        None => {
-            let land = landmass_grid_at_resolution(sdf_resolution_deg);
-            run_search_inner(
-                baked,
-                route_bounds,
-                waypoint_count,
-                search_settings,
-                ship,
-                weights,
-                land,
-                search_start,
-            )
-        }
-        Some(fine) => {
-            let land = landmass_grid_two_tier(sdf_resolution_deg, fine);
-            run_search_inner(
-                baked,
-                route_bounds,
-                waypoint_count,
-                search_settings,
-                ship,
-                weights,
-                land,
-                search_start,
-            )
-        }
+    // Resolve the wind input into one of two physical search modes:
+    // single-baked or ensemble-with-mean-for-bench. FastMean folds
+    // into single-baked by using the precomputed mean as the only
+    // wind map.
+    match wind {
+        WindInput::Single(baked)
+        | WindInput::Ensemble {
+            mean: baked,
+            mode: EnsembleMode::FastMean,
+            ..
+        } => match fine_sdf_resolution_deg {
+            None => {
+                let land = landmass_grid_at_resolution(sdf_resolution_deg);
+                run_search_inner(
+                    baked,
+                    route_bounds,
+                    waypoint_count,
+                    search_settings,
+                    ship,
+                    weights,
+                    land,
+                    search_start,
+                )
+            }
+            Some(fine) => {
+                let land = landmass_grid_two_tier(sdf_resolution_deg, fine);
+                run_search_inner(
+                    baked,
+                    route_bounds,
+                    waypoint_count,
+                    search_settings,
+                    ship,
+                    weights,
+                    land,
+                    search_start,
+                )
+            }
+        },
+        WindInput::Ensemble {
+            ensemble,
+            mean,
+            mode: EnsembleMode::Full,
+        } => match fine_sdf_resolution_deg {
+            None => {
+                let land = landmass_grid_at_resolution(sdf_resolution_deg);
+                run_search_inner_ensemble(
+                    ensemble,
+                    mean,
+                    route_bounds,
+                    waypoint_count,
+                    search_settings,
+                    ship,
+                    weights,
+                    land,
+                    search_start,
+                )
+            }
+            Some(fine) => {
+                let land = landmass_grid_two_tier(sdf_resolution_deg, fine);
+                run_search_inner_ensemble(
+                    ensemble,
+                    mean,
+                    route_bounds,
+                    waypoint_count,
+                    search_settings,
+                    ship,
+                    weights,
+                    land,
+                    search_start,
+                )
+            }
+        },
     }
 }
 
@@ -317,6 +420,123 @@ fn run_search_inner<LS: LandmassSource>(
         route_evolution,
         route_bounds,
         baked,
+        boat,
+        benchmark,
+        bake_duration: std::time::Duration::ZERO,
+        search_duration,
+    })
+}
+
+/// Ensemble counterpart of [`run_search_inner`]. PSO drives an
+/// [`EnsembleSailboatFitCalc`] over the K-member ensemble; the
+/// benchmark route still uses the existing single-wind
+/// [`SailboatFitCalc`] against the precomputed mean wind map (cheaper
+/// than K-fold inside the inner time-PSO, and the benchmark is a
+/// reference, not the source of truth for ensemble fitness).
+///
+/// `SearchResult.baked` carries the mean wind map so the GUI's
+/// per-segment metrics renderer (which queries one wind source) has
+/// something concrete to consult. Callers who need access to the raw
+/// ensemble can call the search through a higher-level API in a
+/// future revision; the current pipeline only needs the mean for
+/// display.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "outer dispatch partitions ownership; bundling would just relocate"
+)]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "debug-only NaN guards catch upstream bugs"
+)]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "ensemble is taken by value to make the dispatch's ownership \
+              transfer explicit at the call site; reference plus drop() \
+              clutter would obscure that. Cost: one extra move of an \
+              owned struct that's about to be dropped anyway."
+)]
+fn run_search_inner_ensemble<LS: LandmassSource>(
+    ensemble: BakedEnsembleWindMap,
+    mean: BakedWindMap,
+    route_bounds: RouteBounds,
+    waypoint_count: WaypointCount,
+    search_settings: SearchSettings,
+    ship: Boat,
+    weights: SearchWeights,
+    land: &LS,
+    search_start: std::time::Instant,
+) -> Result<SearchResult, SearchError> {
+    let (route_evolution, boat, benchmark, best_fit) = waypoint_match!(waypoint_count, N, wrap, {
+        let ensemble_fit_calc = EnsembleSailboatFitCalc::<N, _, _, _> {
+            time_weight: weights.time_weight,
+            fuel_weight: weights.fuel_weight,
+            land_weight: weights.land_weight,
+            departure_time: 0.0,
+            step_distance_max: route_bounds.step_distance_max,
+            ship: &ship,
+            wind_ensemble: &ensemble,
+            landmass: land,
+            robust_objective: RobustObjective::Mean,
+        };
+        // PSO uses ensemble K-fold; baselines / boundary repulsion
+        // query the mean wind (single representative). The init code
+        // only needs `WindSource::sample_wind`, not per-member
+        // fitness — using the mean here keeps the baselines stable.
+        let (gbest, evolution) = search::<N, _, _, _, _>(
+            &ship,
+            &mean,
+            land,
+            route_bounds,
+            &ensemble_fit_calc,
+            search_settings,
+        );
+        if cfg!(debug_assertions) {
+            assert!(!gbest.best_fit.is_nan(), "NaN in gbest: best_fit");
+            debug_assert_path_no_nans(&gbest.best_pos, "gbest.best_pos");
+            for (iter_idx, particles) in evolution.frames().iter().enumerate() {
+                for (p_idx, particle) in particles.iter().enumerate() {
+                    assert!(
+                        !particle.best_fit.is_nan(),
+                        "NaN in evolution[{iter_idx}][{p_idx}]: best_fit",
+                    );
+                    debug_assert_path_no_nans(
+                        &particle.best_pos,
+                        &format!("evolution[{iter_idx}][{p_idx}].best_pos"),
+                    );
+                }
+            }
+        }
+        // Benchmark uses single-wind fit calc against the mean. This
+        // makes the bench a "mean-wind reference" the user can read
+        // alongside the ensemble PSO result.
+        let bench_fit_calc = SailboatFitCalc::<N, _, _, _> {
+            time_weight: weights.time_weight,
+            fuel_weight: weights.fuel_weight,
+            land_weight: weights.land_weight,
+            departure_time: 0.0,
+            step_distance_max: route_bounds.step_distance_max,
+            ship: &ship,
+            wind_source: &mean,
+            landmass: land,
+        };
+        let benchmark = compute_benchmark::<N, _, _>(
+            &ship,
+            &mean,
+            land,
+            route_bounds,
+            &bench_fit_calc,
+            search_settings,
+        );
+        (wrap(evolution), ship, benchmark, gbest.best_fit)
+    });
+    if !best_fit.is_finite() {
+        return Err(SearchError::NoFeasibleRoute { best_fit });
+    }
+    let search_duration = search_start.elapsed();
+    Ok(SearchResult {
+        route_evolution,
+        route_bounds,
+        baked: mean,
         boat,
         benchmark,
         bake_duration: std::time::Duration::ZERO,
