@@ -79,7 +79,7 @@ pub struct BoatOverrides {
 /// Like `BoatOverrides`, no CLI flags — only the `[search]` TOML section.
 /// Weights and waypoint count live in `[run]` (where their CLI flags map)
 /// so this struct stays focused on the inner-loop knobs.
-#[derive(Default, Clone, Copy, Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Default, Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct SearchOverrides {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -118,6 +118,17 @@ pub struct SearchOverrides {
     /// layer already had. Must be ≤ `sdf_resolution_deg` when set.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fine_sdf_resolution_deg: Option<f64>,
+    /// Optional path to a directory of ensemble `.wcav` files. When
+    /// set, the search runs against the K-member ensemble instead of
+    /// a single deterministic wind map; the GUI's wind-map selection
+    /// (or the CLI `<MAP>` arg) is ignored.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ensemble_path: Option<std::path::PathBuf>,
+    /// Robust-fitness mode when `ensemble_path` is set. Serialises as
+    /// `"full"` or `"fast-mean"`; `None` keeps the existing `SearchConfig`
+    /// default (currently `Full`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub robust_mode: Option<crate::config::RobustMode>,
     /// Optional RNG seed for deterministic search runs. `None` (the
     /// default) draws fresh OS entropy. Used by the PSO-tuning study.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -517,6 +528,12 @@ impl SearchOverrides {
         if other.fine_sdf_resolution_deg.is_some() {
             self.fine_sdf_resolution_deg = other.fine_sdf_resolution_deg;
         }
+        if other.ensemble_path.is_some() {
+            self.ensemble_path = other.ensemble_path;
+        }
+        if other.robust_mode.is_some() {
+            self.robust_mode = other.robust_mode;
+        }
         if other.seed.is_some() {
             self.seed = other.seed;
         }
@@ -564,6 +581,12 @@ impl SearchOverrides {
         }
         if let Some(v) = self.fine_sdf_resolution_deg {
             cfg.fine_sdf_resolution_deg = Some(v);
+        }
+        if let Some(v) = &self.ensemble_path {
+            cfg.ensemble_path = Some(v.clone());
+        }
+        if let Some(v) = self.robust_mode {
+            cfg.robust_mode = v;
         }
         if let Some(v) = self.seed {
             cfg.seed = Some(v);
@@ -870,7 +893,7 @@ mod tests {
         let overrides: SearchOverrides =
             toml::from_str("particles_space = 200\ninertia = 0.5\n").expect("valid");
         let mut cfg = SearchConfig::default();
-        let baseline = cfg;
+        let baseline = cfg.clone();
         overrides.apply_to(&mut cfg);
         assert_eq!(cfg.particles_space, 200);
         assert!((cfg.inertia - 0.5).abs() < 1e-9);

@@ -1,8 +1,9 @@
 use std::sync::mpsc::{Receiver, TryRecvError};
 
 use bywind::{
-    BoatConfig, GenerateConfig, MapBounds, SearchConfig, SearchError, SearchResult, SearchWeights,
-    TimedWindMap, route_evolution_match, run_search_blocking, run_time_reopt_blocking,
+    BoatConfig, GenerateConfig, LonLatBbox, MapBounds, RobustMode, SearchConfig, SearchError,
+    SearchResult, SearchWeights, TimedWindMap, WindInput, route_evolution_match,
+    run_search_blocking, run_search_blocking_with_baked, run_time_reopt_blocking,
 };
 
 use crate::config::{EditorState, Tool, ViewState};
@@ -168,11 +169,34 @@ impl BywindApp {
             self.report_error(format!("Invalid search config — {e}"));
             return;
         }
-        let Some(wind_map) = &self.wind_map else {
-            return;
-        };
-        let Some(map_bounds) = MapBounds::from_wind_map(wind_map) else {
-            return;
+        // Ensemble dispatch: when the user has set an ensemble dir in
+        // advanced settings, the GUI doesn't need an in-memory wind
+        // map — the worker thread will load the ensemble itself. We
+        // still need *some* map bounds to derive the bake / route
+        // window; the user-drawn route bbox is the only source we
+        // have without paying the load cost on the UI thread, so
+        // require it.
+        let ensemble_dispatch = self.search.ensemble_path.clone();
+        let map_bounds = if let Some(_ensemble) = &ensemble_dispatch {
+            let Some(bbox) = self.editor.route_bbox else {
+                self.report_error(
+                    "Ensemble search needs a route bbox to size the bake. \
+                     Draw one with the Route Bounds tool, then click Run Search."
+                        .to_owned(),
+                );
+                return;
+            };
+            MapBounds {
+                bbox: LonLatBbox::new(bbox.0, bbox.2, bbox.1, bbox.3),
+            }
+        } else {
+            let Some(wind_map) = &self.wind_map else {
+                return;
+            };
+            let Some(mb) = MapBounds::from_wind_map(wind_map) else {
+                return;
+            };
+            mb
         };
         let bounds = map_bounds.clamp_to(self.editor.route_bbox);
         if !bounds.is_non_degenerate() {
@@ -197,7 +221,6 @@ impl BywindApp {
         let sdf_resolution = self.search.sdf_resolution_deg;
         let fine_sdf_resolution = self.search.fine_sdf_resolution_deg;
 
-        let wind_map_snapshot: TimedWindMap = wind_map.clone();
         let ctx = ctx.clone();
         let waypoint_count = self.search.waypoint_count;
         let weights = SearchWeights {
@@ -215,24 +238,55 @@ impl BywindApp {
         search_settings.seed = Some(effective_seed);
         self.outputs.last_search_seed = Some(effective_seed);
         let ship = self.boat.to_boat();
+        let robust_mode = self.search.robust_mode;
         let (tx, rx) = std::sync::mpsc::channel();
 
-        std::thread::spawn(move || {
-            let result = run_search_blocking(
-                &wind_map_snapshot,
-                bake_bounds,
-                route_bounds,
-                waypoint_count,
-                search_settings,
-                ship,
-                weights,
-                sdf_resolution,
-                fine_sdf_resolution,
-            );
-            // Receiver may have been dropped (job replaced, app closed) — fine.
-            drop(tx.send(result));
-            ctx.request_repaint();
-        });
+        if let Some(ensemble_path) = ensemble_dispatch {
+            // Ensemble path: load + bake + search all in the worker
+            // thread so the UI stays responsive during the ~3 s load.
+            std::thread::spawn(move || {
+                let result = run_ensemble_search(
+                    &ensemble_path,
+                    bake_bounds,
+                    route_bounds,
+                    waypoint_count,
+                    search_settings,
+                    ship,
+                    weights,
+                    sdf_resolution,
+                    fine_sdf_resolution,
+                    robust_mode,
+                );
+                drop(tx.send(result));
+                ctx.request_repaint();
+            });
+        } else {
+            // Single-deterministic path: existing flow. `wind_map` is
+            // guaranteed `Some` here because the ensemble dispatch
+            // branch above is the only way to skip the `wind_map`
+            // requirement, and we wouldn't be on this branch if it
+            // had fired.
+            let wind_map_snapshot: TimedWindMap = self
+                .wind_map
+                .as_ref()
+                .expect("wind_map presence is checked at the top of run_search")
+                .clone();
+            std::thread::spawn(move || {
+                let result = run_search_blocking(
+                    &wind_map_snapshot,
+                    bake_bounds,
+                    route_bounds,
+                    waypoint_count,
+                    search_settings,
+                    ship,
+                    weights,
+                    sdf_resolution,
+                    fine_sdf_resolution,
+                );
+                drop(tx.send(result));
+                ctx.request_repaint();
+            });
+        }
 
         self.search_job.set_running(rx);
         self.search_started_at = Some(std::time::Instant::now());
@@ -476,6 +530,56 @@ impl eframe::App for BywindApp {
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, eframe::APP_KEY, self);
     }
+}
+
+/// Worker-side ensemble search. Loads the K members from disk, bakes
+/// them in parallel, wraps them in the right [`WindInput`] variant
+/// based on `robust_mode`, and dispatches to
+/// `run_search_blocking_with_baked`.
+///
+/// Returns the same `Result<SearchResult, SearchError>` shape as
+/// [`run_search_blocking`] so the UI-side polling code doesn't need to
+/// know which path produced the result.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the search worker is a glue function with no natural shared bundle"
+)]
+fn run_ensemble_search(
+    ensemble_path: &std::path::Path,
+    bake_bounds: bywind::wind_map::BakeBounds,
+    route_bounds: bywind::RouteBounds,
+    waypoint_count: bywind::WaypointCount,
+    search_settings: bywind::SearchSettings,
+    ship: bywind::Boat,
+    weights: SearchWeights,
+    sdf_resolution_deg: f64,
+    fine_sdf_resolution_deg: Option<f64>,
+    robust_mode: RobustMode,
+) -> Result<SearchResult, SearchError> {
+    let ensemble = match bywind::TimedEnsembleWindMap::load_dir(ensemble_path) {
+        Ok(e) => e,
+        Err(e) => {
+            log::error!("ensemble load failed: {e}");
+            return Err(SearchError::NoFeasibleRoute {
+                best_fit: f64::NAN,
+            });
+        }
+    };
+    let baked = ensemble.bake(bake_bounds);
+    let wind_input = match robust_mode {
+        RobustMode::Full => WindInput::ensemble_full(baked),
+        RobustMode::FastMean => WindInput::ensemble_fast_mean(baked),
+    };
+    run_search_blocking_with_baked(
+        wind_input,
+        route_bounds,
+        waypoint_count,
+        search_settings,
+        ship,
+        weights,
+        sdf_resolution_deg,
+        fine_sdf_resolution_deg,
+    )
 }
 
 #[cfg(test)]

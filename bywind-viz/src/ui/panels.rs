@@ -500,6 +500,79 @@ impl BywindApp {
         ui.end_row();
     }
 
+    /// "Ensemble" pair of rows in the Advanced Settings grid: text
+    /// field for the directory of `.wcav` files (one per member,
+    /// produced by `bywind-cli fetch-ensemble`) and a combo box
+    /// selecting the robust-fitness mode. Mutually exclusive with the
+    /// regular wind-map selection — when an ensemble path is set, the
+    /// wind-map slot is ignored at search time.
+    fn render_ensemble_rows(&mut self, ui: &mut egui::Ui) {
+        use bywind::RobustMode;
+        ui.label("Ensemble dir").on_hover_text(
+            "Path to a directory of ensemble `.wcav` files (output of \
+             `bywind-cli fetch-ensemble`). When set, the search runs \
+             against the K-member ensemble instead of the loaded wind \
+             map. Leave empty for single-deterministic search.",
+        );
+        ui.horizontal(|ui| {
+            // Inline editable text field — file-dialog widgets on egui
+            // are platform-specific and not in this crate yet, so users
+            // paste the path. A clear button below the row resets.
+            let mut path_str = self
+                .search
+                .ensemble_path
+                .as_ref()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default();
+            let response = ui.add(
+                egui::TextEdit::singleline(&mut path_str)
+                    .hint_text("(none — single-deterministic)")
+                    .desired_width(220.0),
+            );
+            if response.changed() {
+                self.search.ensemble_path = if path_str.trim().is_empty() {
+                    None
+                } else {
+                    Some(std::path::PathBuf::from(path_str.trim()))
+                };
+            }
+            if ui.button("Clear").on_hover_text("Reset to single-deterministic").clicked() {
+                self.search.ensemble_path = None;
+            }
+        });
+        ui.end_row();
+
+        ui.label("Robust mode").on_hover_text(
+            "Aggregation strategy when an ensemble directory is set. \
+             `Full` runs K-fold robust fitness (currently mean of \
+             per-member fitnesses); `Fast mean` pre-computes a single \
+             mean wind map and runs the existing single-deterministic \
+             search against it. Fast mean is ~K× faster but \
+             `E[f(x,wind)] ≠ f(x, E[wind])` — for routes in the \
+             linear-polar regime the gap is typically <1 %.",
+        );
+        ui.horizontal(|ui| {
+            let enabled = self.search.ensemble_path.is_some();
+            ui.add_enabled_ui(enabled, |ui| {
+                let mut mode = self.search.robust_mode;
+                egui::ComboBox::from_id_salt("ensemble_robust_mode")
+                    .selected_text(match mode {
+                        RobustMode::Full => "Full (K-fold)",
+                        RobustMode::FastMean => "Fast mean",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut mode, RobustMode::Full, "Full (K-fold)");
+                        ui.selectable_value(&mut mode, RobustMode::FastMean, "Fast mean");
+                    });
+                self.search.robust_mode = mode;
+            });
+            if !enabled {
+                ui.weak("(set ensemble dir to enable)");
+            }
+        });
+        ui.end_row();
+    }
+
     /// Search-section block of the tools panel: waypoint count, the
     /// fitness-weights / PSO-parameter grid, and the Run Search button.
     /// Extracted from `render_tools_panel` purely to keep that function
@@ -761,6 +834,8 @@ impl BywindApp {
 
                         self.render_two_tier_row(ui);
 
+                        self.render_ensemble_rows(ui);
+
                         ui.label("Range K").on_hover_text(
                             "Departure-time samples per segment in the inner time-PSO \
                              lookup table. Higher values reduce time-axis interpolation \
@@ -832,6 +907,8 @@ impl BywindApp {
                     self.search.range_k = defaults.range_k;
                     self.search.k_mcr = defaults.k_mcr;
                     self.search.seed = defaults.seed;
+                    self.search.ensemble_path = defaults.ensemble_path.clone();
+                    self.search.robust_mode = defaults.robust_mode;
                 }
             });
         // Mirror `open` back so the title-bar X toggles the flag.

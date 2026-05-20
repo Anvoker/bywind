@@ -133,7 +133,7 @@ impl Default for GenerateConfig {
 }
 
 /// Inputs to the sailing-search PSO.
-#[derive(serde::Deserialize, serde::Serialize, Clone, Copy, Debug)]
+#[derive(serde::Deserialize, serde::Serialize, Clone, Debug)]
 #[serde(default)]
 pub struct SearchConfig {
     /// How many waypoints the path has (endpoints included).
@@ -214,6 +214,42 @@ pub struct SearchConfig {
     /// Round-trips through TOML / JSON as the lowercase variant name.
     #[serde(with = "topology_serde")]
     pub topology: Topology,
+
+    /// Path to a directory of ensemble `.wcav` files (produced by
+    /// `bywind-cli fetch-ensemble`). When set, the search runs against
+    /// the K-member ensemble instead of a single deterministic wind
+    /// map; `[run].map` / the GUI's wind-map selection is ignored.
+    /// Default `None` (single-deterministic).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ensemble_path: Option<std::path::PathBuf>,
+
+    /// Robust-fitness aggregation mode used when `ensemble_path` is
+    /// set. `RobustMode::Full` (default) runs the K-fold loop with
+    /// [`swarmkit_sailing::RobustObjective::Mean`]; `RobustMode::FastMean`
+    /// pre-computes a single mean wind map and runs the existing
+    /// single-deterministic search against it — much faster, but
+    /// `E[f(x, wind)] ≠ f(x, E[wind])` so the result is a linearisation
+    /// approximation. Ignored when `ensemble_path` is `None`.
+    #[serde(default)]
+    pub robust_mode: RobustMode,
+}
+
+/// Aggregation strategy for ensemble fitness. Round-trips through TOML
+/// / JSON as the lowercase variant name (`"full"` / `"fast-mean"`).
+#[derive(Copy, Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RobustMode {
+    /// K-fold robust fitness — every particle is scored against all
+    /// K members and the per-member fitnesses are reduced via mean.
+    /// Slowest mode; the only one where the search sees ensemble
+    /// uncertainty directly.
+    #[default]
+    Full,
+    /// Pre-compute the mean wind map once and run the existing
+    /// single-deterministic search against it. ~K× faster than
+    /// `Full`. See the doc on `SearchConfig::robust_mode` for the
+    /// `E[f] vs f(E)` caveat.
+    FastMean,
 }
 
 impl Default for SearchConfig {
@@ -241,6 +277,8 @@ impl Default for SearchConfig {
             range_k: DEFAULT_RANGE_K,
             k_mcr: DEFAULT_K_MCR,
             topology: Topology::default(),
+            ensemble_path: None,
+            robust_mode: RobustMode::default(),
         }
     }
 }

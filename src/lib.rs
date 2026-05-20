@@ -98,7 +98,7 @@ pub use swarmkit_sailing::{
 };
 // `DEFAULT_FRAME_STEP_SECONDS` is a niche default; consumers that need it
 // reach for `config::DEFAULT_FRAME_STEP_SECONDS`.
-pub use config::{BoatConfig, GenerateConfig, SearchConfig};
+pub use config::{BoatConfig, GenerateConfig, RobustMode, SearchConfig};
 pub use ensemble::{BakedEnsembleWindMap, TimedEnsembleWindMap};
 pub use search::{
     EnsembleMode, WindInput,
