@@ -46,6 +46,17 @@ use chrono::{
 /// NOAA's public S3 bucket mirror, addressed via HTTPS rather than the
 /// `s3://` protocol so we can use plain `ureq` without an AWS SDK.
 const BUCKET: &str = "https://noaa-gfs-bdp-pds.s3.amazonaws.com";
+
+/// Build the GFS frame URL — the per-frame piece that
+/// [`fetch_to_grib2`] inlined before being factored out to allow
+/// sibling code paths (`fetch_ensemble` uses the same fetch loop with a
+/// different URL pattern). Public-in-crate so the ensemble module can
+/// reuse it via [`fetch_to_grib2_with_url`].
+pub(crate) fn gfs_url_for_frame(cycle: DateTime<Utc>, forecast_hour: u32) -> String {
+    let yyyymmdd = format!("{:04}{:02}{:02}", cycle.year(), cycle.month(), cycle.day());
+    let hh = format!("{:02}", cycle.hour());
+    format!("{BUCKET}/gfs.{yyyymmdd}/{hh}/atmos/gfs.t{hh}z.pgrb2.0p25.f{forecast_hour:03}")
+}
 /// Hours between successive GFS cycles (00z, 06z, 12z, 18z).
 const CYCLE_HOURS: i64 = 6;
 /// Highest forecast hour we pull from a cycle. Cycle N's `f005` is
@@ -173,7 +184,25 @@ impl From<std::io::Error> for FetchError {
 pub fn fetch_to_grib2<W: Write>(
     spec: &FetchSpec,
     out: &mut W,
+    progress: impl FnMut(FetchProgress) -> ControlFlow<()>,
+) -> Result<FetchStats, FetchError> {
+    fetch_to_grib2_with_url(spec, out, progress, gfs_url_for_frame)
+}
+
+/// Generalised frame-iteration loop shared with the ensemble fetch
+/// path. The original [`fetch_to_grib2`] is now a thin wrapper around
+/// this with the GFS URL builder.
+///
+/// `url_for_frame(cycle, forecast_hour)` produces the *content* URL for
+/// each frame; the `.idx` sidecar URL is derived by appending `.idx`.
+///
+/// # Errors
+/// Same shape as [`fetch_to_grib2`].
+pub(crate) fn fetch_to_grib2_with_url<W: Write>(
+    spec: &FetchSpec,
+    out: &mut W,
     mut progress: impl FnMut(FetchProgress) -> ControlFlow<()>,
+    url_for_frame: impl Fn(DateTime<Utc>, u32) -> String,
 ) -> Result<FetchStats, FetchError> {
     validate_spec(spec)?;
 
@@ -194,10 +223,7 @@ pub fn fetch_to_grib2<W: Write>(
         idx += 1;
         let (cycle, forecast_hour) = resolve_cycle(frame_t)?;
 
-        let yyyymmdd = format!("{:04}{:02}{:02}", cycle.year(), cycle.month(), cycle.day());
-        let hh = format!("{:02}", cycle.hour());
-        let f_url =
-            format!("{BUCKET}/gfs.{yyyymmdd}/{hh}/atmos/gfs.t{hh}z.pgrb2.0p25.f{forecast_hour:03}");
+        let f_url = url_for_frame(cycle, forecast_hour);
         let idx_url = format!("{f_url}.idx");
 
         let idx_text = match fetch_text(&agent, &idx_url) {

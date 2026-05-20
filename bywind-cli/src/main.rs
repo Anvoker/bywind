@@ -20,6 +20,7 @@ mod convert;
 mod display;
 mod error;
 mod fetch;
+mod fetch_ensemble_cli;
 mod info;
 mod inspect;
 mod parsing;
@@ -87,6 +88,13 @@ enum Command {
     /// or 18). `--interval-h` defaults to 1 (seamless 1-hour cadence
     /// using each cycle's f000..f005).
     Fetch(fetch::FetchArgs),
+
+    /// Pull an *ensemble* wind-map window from NOAA's GEFS S3 bucket,
+    /// writing one `.wcav` per member into the `--out` directory.
+    /// `--members N` picks a stride-sampled subset of the 31-member
+    /// ensemble (control + 30 perturbed); default 10. Use the resulting
+    /// directory with `bywind-cli search --ensemble <dir>`.
+    FetchEnsemble(fetch_ensemble_cli::FetchEnsembleArgs),
 
     /// Inspect a saved solution: print metadata and, if a wind map is given,
     /// re-score the gbest path against it (per-segment table + totals).
@@ -158,6 +166,7 @@ fn main() -> ExitCode {
             grib_bbox,
         } => convert::run(&input, &out, grib_stride, grib_bbox.as_deref()),
         Command::Fetch(args) => fetch::run(&args),
+        Command::FetchEnsemble(args) => fetch_ensemble_cli::run(&args),
         Command::Info { map } => info::run(&map),
         Command::Search(args) => search::run(&args),
         Command::Inspect { solution, map } => inspect::run(&solution, map.as_deref()),
