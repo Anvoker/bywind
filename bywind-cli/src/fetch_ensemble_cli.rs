@@ -32,8 +32,10 @@ pub struct FetchEnsembleArgs {
     #[arg(long, short = 'o')]
     pub out: PathBuf,
     /// Hours between successive frames. Must be one of 1, 2, 3, or 6.
-    /// Default 1.
-    #[arg(long, value_name = "N", default_value_t = 1)]
+    /// Default 3 — GEFS's `pgrb2sp25` subset publishes at 3-hourly
+    /// cadence (f000, f003, ...), not hourly like GFS, so 1 / 2
+    /// return 404s on every other frame.
+    #[arg(long, value_name = "N", default_value_t = 3)]
     pub interval_h: u32,
     /// Number of ensemble members to pull (stride-sampled from the
     /// 31-member control+perturbed set). Default 10.
