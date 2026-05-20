@@ -186,8 +186,15 @@ impl BywindApp {
                 );
                 return;
             };
+            // `EditorState::route_bbox` is `(lon_min, lon_max, lat_min,
+            // lat_max)` per io.rs:286 (the TOML layout convention),
+            // which matches `LonLatBbox::new`'s argument order
+            // exactly. Passing it through verbatim — earlier code
+            // here had the components permuted, which made the
+            // ensemble bake bounds malformed and silently broke the
+            // A* benchmark.
             MapBounds {
-                bbox: LonLatBbox::new(bbox.0, bbox.2, bbox.1, bbox.3),
+                bbox: LonLatBbox::new(bbox.0, bbox.1, bbox.2, bbox.3),
             }
         } else {
             let Some(wind_map) = &self.wind_map else {
