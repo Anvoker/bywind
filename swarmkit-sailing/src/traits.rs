@@ -32,6 +32,23 @@ impl WindSource for WindSourceDummy {
     }
 }
 
+/// Ensemble of [`WindSource`] members.
+///
+/// Used by the robust-fitness search path: every particle's fitness
+/// is reduced from `K` per-member evaluations into a single scalar
+/// via a robust objective (mean today; `CVaR` / multi-objective in
+/// future work). Single-deterministic search paths don't need this
+/// trait — they take `WindSource` directly.
+pub trait EnsembleWindSource: Sync {
+    /// The concrete per-member [`WindSource`] type. Typically
+    /// `BakedWindMap` for the search-time hot path.
+    type Member: WindSource;
+    /// `K`, the number of ensemble members.
+    fn member_count(&self) -> usize;
+    /// Borrow the `k`-th member. Panics on out-of-range `k`.
+    fn member(&self, k: usize) -> &Self::Member;
+}
+
 pub trait Sailboat: Sync {
     /// Fuel consumed (kg) by burning at the load `mcr_01 ∈ [0, 1]` for `delta_time` seconds.
     fn get_fuel_consumed(&self, mcr_01: f64, delta_time: f64) -> f64;

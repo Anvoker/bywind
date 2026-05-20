@@ -38,7 +38,10 @@ pub mod profile_timers;
 
 pub use boat::Boat;
 pub use dynamics::{get_segment_fuel_and_time, get_segment_land_metres};
-pub use fit::{SailboatFitCalc, weighted_fitness};
+pub use fit::{
+    EnsembleSailboatFitCalc, RobustObjective, SailboatFitCalc, walk_segments_against_wind,
+    weighted_fitness,
+};
 pub use init::{BaselineShares, InitShares, PathInit};
 pub use path_baseline::PathBaseline;
 pub use route_bounds::{DEFAULT_STEP_DISTANCE_FRACTION, RouteBounds};

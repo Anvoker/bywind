@@ -37,7 +37,10 @@ pub mod baked_codec;
 pub mod bounds;
 pub mod config;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod ensemble;
 pub mod fetch;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod fetch_ensemble;
 pub mod fmt;
 pub mod grib2;
 #[cfg(not(target_arch = "wasm32"))]
@@ -96,6 +99,10 @@ pub use swarmkit_sailing::{
 // `DEFAULT_FRAME_STEP_SECONDS` is a niche default; consumers that need it
 // reach for `config::DEFAULT_FRAME_STEP_SECONDS`.
 pub use config::{BoatConfig, GenerateConfig, SearchConfig};
+pub use ensemble::{BakedEnsembleWindMap, TimedEnsembleWindMap};
+pub use search::{
+    EnsembleMode, WindInput,
+};
 pub use search::{
     BAKE_STEP, SearchError, SearchResult, SearchWeights, run_search_blocking,
     run_search_blocking_with_baked, run_time_reopt_blocking,
