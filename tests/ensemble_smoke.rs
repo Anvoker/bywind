@@ -137,6 +137,39 @@ fn ensemble_full_k_three_produces_finite_fitness() {
 }
 
 #[test]
+fn ensemble_assessment_time_varies_across_distinct_members() {
+    // Regression guard: per-member `MemberMetrics.time_s` must reflect
+    // a per-member time-reopt against that member's wind, not a sum of
+    // the converged gbest path's segment durations (which would be
+    // identical across members because `walk_segments_against_wind`
+    // integrates segment times from `path.t`, not the wind).
+    let members: Vec<TimedWindMap> = (0..3)
+        .map(|i| synthetic_wind(WIND_SEED_BASE + i + 100))
+        .collect();
+    let bounds = MapBounds::from_wind_map(&members[0]).expect("non-empty");
+    let bake_bounds = bounds.to_bake_bounds(BAKE_STEP);
+    let baked: Vec<_> = members.iter().map(|m| m.clone().bake(bake_bounds)).collect();
+    let names: Vec<String> = (0..3).map(|i| format!("gep{i:02}")).collect();
+    let ensemble = BakedEnsembleWindMap::from_members(baked, names);
+
+    let result = run_with_wind(WindInput::ensemble_full(ensemble), bounds);
+    let assessment = result
+        .ensemble
+        .as_ref()
+        .expect("Full mode must populate the ensemble assessment");
+    assert_eq!(assessment.per_member.len(), 3);
+    let times: Vec<f64> = assessment.per_member.iter().map(|m| m.time_s).collect();
+    // At least one pair must differ: distinct synthetic winds under
+    // per-member time-reopt cannot produce bit-identical schedules.
+    let any_differ = times.iter().any(|t| (*t - times[0]).abs() > 1e-9);
+    assert!(
+        any_differ,
+        "per-member time_s collapsed to a single value across distinct members — \
+         per-member time-reopt likely regressed: times={times:?}",
+    );
+}
+
+#[test]
 fn ensemble_full_with_identical_members_matches_single_deterministic() {
     // K copies of the same wind map. The mean is just that wind map.
     // K-fold Mean fitness reduces to single-deterministic fitness on

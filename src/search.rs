@@ -36,26 +36,39 @@ pub struct SearchResult {
     pub ensemble: Option<EnsembleAssessment>,
 }
 
-/// Per-ensemble-member evaluation of the converged gbest path. Lets
-/// the UI show the spread (min / max / stddev) of fitness, time, and
-/// fuel across members so the user can judge how robust the route is
-/// — narrow spread → robust; wide spread → brittle.
+/// Per-ensemble-member assessment of the converged gbest path.
+///
+/// For each member the gbest `xy` is held fixed and the segment-time
+/// array `t` is re-optimised against that member's wind via
+/// [`reoptimize_times`]. The resulting `(time, fuel)` is what each
+/// member's optimal scheduling of the same spatial route would look
+/// like. Narrow spread → robust route; wide spread → brittle.
+///
+/// Per-member time-reopt is needed because
+/// [`walk_segments_against_wind`] sums `seg.segment_time` from the
+/// path's `t` array, not from the wind — without it, every member
+/// shares `time_s = sum(gbest.t)` and the time axis of the spread
+/// collapses to a single value.
 #[derive(Clone, Debug)]
 pub struct EnsembleAssessment {
     pub per_member: Vec<MemberMetrics>,
 }
 
-/// One ensemble member's evaluation of the converged gbest route.
-/// `land_m` is shared across members (wind-independent) but stored
-/// per-member for symmetry with the aggregate display layer.
+/// One ensemble member's optimal-schedule evaluation of the converged
+/// gbest route.
+///
+/// See [`EnsembleAssessment`] for the reopt protocol. `land_m` is
+/// shared across members (wind-independent) but stored per-member for
+/// symmetry with the aggregate display layer.
 #[derive(Clone, Debug)]
 pub struct MemberMetrics {
     /// Filename stem of the source `.wcav`, e.g. `"gec00"` or
     /// `"gep08"`. Lets the UI show "worst-case: gep23, best-case:
     /// gec00" without making the user count indices.
     pub name: String,
-    /// Travel time in seconds along the gbest path under this
-    /// member's wind.
+    /// Total travel time in seconds for this member: the sum of the
+    /// per-segment durations chosen by the per-member time-reopt
+    /// against this member's wind.
     pub time_s: f64,
     /// Fuel consumed in kg.
     pub fuel_kg: f64,
@@ -584,11 +597,14 @@ fn run_search_inner_ensemble<LS: LandmassSource>(
             &bench_fit_calc,
             search_settings,
         );
-        // Per-member assessment of the converged gbest path: evaluate
-        // the SAME route against each member's wind so the UI can show
-        // the spread (min / max / stddev) of time / fuel / fitness
-        // across the K-realisation distribution. Land penalty is
-        // wind-independent — compute once and replicate.
+        // Per-member assessment of the converged gbest path: hold the
+        // spatial geometry `xy` fixed and time-reopt `t` against each
+        // member's wind, then walk the reopt'd path for `(time, fuel)`.
+        // Without per-member time-reopt the time axis is constant —
+        // `walk_segments_against_wind` integrates segment durations
+        // from `path.t`, not the wind, so a fixed-path replay gives
+        // every member the same `time_s = sum(gbest.t)`. Land penalty
+        // is wind-independent — compute once and replicate.
         let gbest_pos = gbest.best_pos;
         let land_m: f64 = (0..N - 1)
             .map(|i| {
@@ -600,10 +616,21 @@ fn run_search_inner_ensemble<LS: LandmassSource>(
         let per_member: Vec<MemberMetrics> = (0..ensemble.member_count())
             .map(|k| {
                 let member = ensemble.member(k);
+                let member_fit_calc = SailboatFitCalc::<N, _, _, _> {
+                    time_weight: weights.time_weight,
+                    fuel_weight: weights.fuel_weight,
+                    land_weight: weights.land_weight,
+                    departure_time: 0.0,
+                    step_distance_max: route_bounds.step_distance_max,
+                    ship: &ship,
+                    wind_source: member,
+                    landmass: land,
+                };
+                let reopt_path = reoptimize_times(&member_fit_calc, search_settings, gbest_pos);
                 let (t, f) = walk_segments_against_wind(
                     &ship,
                     member,
-                    gbest_pos,
+                    reopt_path,
                     0.0,
                     route_bounds.step_distance_max,
                 );
