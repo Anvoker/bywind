@@ -5,6 +5,7 @@ use super::{
     min_render_scale, paint_endpoint_highlight, parse_scale_value,
 };
 use crate::app::BywindApp;
+use crate::search::SummarySelection;
 
 impl BywindApp {
     /// Right-side stats panel. Always rendered (so it acts as the
@@ -15,7 +16,21 @@ impl BywindApp {
     /// breakdown render in the bottom-up layout.
     pub(crate) fn render_stats_panel(&mut self, ui: &mut egui::Ui) {
         let mut toggle_summary = false;
-        let stats = self.outputs.segment_stats.clone();
+        // Resolve the current summary view-source up front so both the
+        // Summary block and the Segments scroll below it agree. A
+        // dangling `SoloMember(k)` (cohort shrank but we haven't
+        // observed it yet via the poll arm) falls through to None
+        // rather than panicking.
+        let (stats, selected_fitness) = match self.outputs.summary_selection {
+            SummarySelection::Gbest => (
+                self.outputs.segment_stats.clone(),
+                self.outputs.best_fitness,
+            ),
+            SummarySelection::SoloMember(k) => match self.outputs.solo_runs.get(k) {
+                Some(run) => (Some(run.segment_stats.clone()), Some(run.fitness)),
+                None => (None, None),
+            },
+        };
         // Nested layout: the right panel hosts a bottom sub-panel pinned to
         // the Summary totals, and a central sub-panel above it for the
         // scrolling Segments list. Earlier we tried a single `bottom_up`
@@ -28,7 +43,22 @@ impl BywindApp {
         // central sub-panel.
         egui::Panel::right("stats_panel").show_inside(ui, |ui| {
             egui::Panel::bottom("stats_panel_summary").show_inside(ui, |ui| {
-                toggle_summary = self.render_stats_summary(ui, stats.as_deref());
+                // View selector pinned to the screen-bottom edge of
+                // the summary panel via a nested `Panel::bottom`, so
+                // the dropdown doesn't shift around as bench /
+                // ensemble blocks above it appear and disappear. Only
+                // wrapped when there's actually a cohort to pick
+                // from; an empty selector would otherwise eat a strip
+                // of vertical space at the bottom for no payoff.
+                if !self.outputs.solo_runs.is_empty() {
+                    egui::Panel::bottom("stats_panel_selector").show_inside(ui, |ui| {
+                        self.render_summary_selector(ui);
+                    });
+                }
+                egui::CentralPanel::default().show_inside(ui, |ui| {
+                    toggle_summary =
+                        self.render_stats_summary(ui, stats.as_deref(), selected_fitness);
+                });
             });
             egui::CentralPanel::default().show_inside(ui, |ui| {
                 ui.heading("Segments");
@@ -51,14 +81,16 @@ impl BywindApp {
     }
 
     /// Top-down summary block for the right-panel's bottom sub-panel:
-    /// Summary heading, gbest totals, then the benchmark grid (when
-    /// available). `stats == None` renders a placeholder. Returns true if
-    /// the Summary heading was right-clicked this frame so the caller can
-    /// toggle the unit display.
+    /// the source selector (Main gbest vs solo per-member), totals
+    /// for the selected source, and — only when viewing the main
+    /// gbest — the benchmark / ensemble-spread blocks. Returns true
+    /// if the Summary heading was right-clicked this frame so the
+    /// caller can toggle the unit display.
     fn render_stats_summary(
         &self,
         ui: &mut egui::Ui,
         stats: Option<&[bywind::SegmentMetrics]>,
+        selected_fitness: Option<f64>,
     ) -> bool {
         let toggle_summary = ui.heading("Summary").secondary_clicked();
         ui.separator();
@@ -69,7 +101,7 @@ impl BywindApp {
         let total_time: f64 = stats.iter().map(|m| m.time).sum();
         let total_fuel: f64 = stats.iter().map(|m| m.fuel).sum();
         let total_land_metres: f64 = stats.iter().map(|m| m.land_metres).sum();
-        let best_fitness = self.outputs.best_fitness;
+        let is_gbest = self.outputs.summary_selection == SummarySelection::Gbest;
         let bake_duration = self.outputs.bake_duration;
         let search_duration = self.outputs.search_duration;
         let total_time_str = if self.view.total_time_breakdown {
@@ -82,19 +114,43 @@ impl BywindApp {
         ui.label(format!("Total time: {total_time_str}"));
         ui.label(format!("Total fuel: {total_fuel_str}"));
         ui.label(format!("Total land: {}", format_land_km(total_land_metres)));
-        if let Some(d) = bake_duration {
-            ui.label(format!("Bake:       {:.2}s", d.as_secs_f64()));
+        // Bake / Search timings only describe the main search. We
+        // don't track per-member solo timings (the cohort shares a
+        // single bake and the K wallclock is dominated by the loop
+        // total, not per-member), so hide both when the user has
+        // switched the dropdown to a solo member.
+        if is_gbest {
+            if let Some(d) = bake_duration {
+                ui.label(format!("Bake:       {:.2}s", d.as_secs_f64()));
+            }
+            if let Some(d) = search_duration {
+                ui.label(format!("Search:     {:.2}s", d.as_secs_f64()));
+            }
         }
-        if let Some(d) = search_duration {
-            ui.label(format!("Search:     {:.2}s", d.as_secs_f64()));
-        }
-        if let Some(fit) = best_fitness {
+        if let Some(fit) = selected_fitness {
             let fit_str = if self.view.total_time_breakdown {
                 format_fitness_magnitude(fit)
             } else {
                 format!("{fit:.4}")
             };
             ui.label(format!("Fitness:    {fit_str}"));
+        }
+        // Benchmark + ensemble-spread blocks are both about the main
+        // converged gbest — they don't make sense for a solo member's
+        // independent search. Instead, for a solo view we show a
+        // "Main:" delta grid so the user can read how the per-member
+        // optimum compares to the ensemble-chosen route (analogous to
+        // Main view's Bench grid).
+        if !is_gbest {
+            self.render_main_comparison(
+                ui,
+                total_time,
+                total_fuel,
+                total_land_metres,
+                selected_fitness,
+                segment_in_tonnes,
+            );
+            return toggle_summary;
         }
         // Benchmark group sits below the gbest summary, separated by a
         // divider. The two cells per row are split into a Grid so the
@@ -143,7 +199,7 @@ impl BywindApp {
                         format!("{:.4}", b.fitness)
                     };
                     ui.label(format!("Bench fit:  {bench_fit_str}"));
-                    if let Some(fit) = best_fitness {
+                    if let Some(fit) = selected_fitness {
                         ui.label(format!("({})", format_pso_delta(fit, b.fitness, true)));
                     } else {
                         ui.label("");
@@ -155,6 +211,124 @@ impl BywindApp {
             self.render_ensemble_spread(ui, ens, segment_in_tonnes);
         }
         toggle_summary
+    }
+
+    /// Counterpart to the Main view's Bench grid, shown on a solo
+    /// view. The selected solo member's totals are passed in (already
+    /// summed by the caller); we sum the main gbest's totals from
+    /// `outputs.segment_stats` here and render each row as
+    /// "Main <metric>:  <value>  (Solo X% better/worse)". The deltas
+    /// are oriented so positive % always means the solo improved over
+    /// main on that axis, matching the Main-vs-Bench convention.
+    /// Hidden when the main gbest's metadata isn't around — re-load
+    /// of an old session before any search runs, for example.
+    fn render_main_comparison(
+        &self,
+        ui: &mut egui::Ui,
+        solo_total_time: f64,
+        solo_total_fuel: f64,
+        solo_total_land: f64,
+        solo_fitness: Option<f64>,
+        segment_in_tonnes: bool,
+    ) {
+        let Some(main_stats) = self.outputs.segment_stats.as_deref() else {
+            return;
+        };
+        let main_total_time: f64 = main_stats.iter().map(|m| m.time).sum();
+        let main_total_fuel: f64 = main_stats.iter().map(|m| m.fuel).sum();
+        let main_total_land: f64 = main_stats.iter().map(|m| m.land_metres).sum();
+        let main_fitness = self.outputs.best_fitness;
+        ui.separator();
+        egui::Grid::new("main_compare_grid")
+            .num_columns(2)
+            .spacing([12.0, 4.0])
+            .show(ui, |ui| {
+                let main_time_str = if self.view.total_time_breakdown {
+                    format_duration_breakdown(main_total_time)
+                } else {
+                    format!("{main_total_time:.1}s")
+                };
+                ui.label(format!("Main time: {main_time_str}"));
+                ui.label(format!(
+                    "({})",
+                    format_pso_delta(solo_total_time, main_total_time, false),
+                ));
+                ui.end_row();
+
+                let main_fuel_str = format_fuel(main_total_fuel, segment_in_tonnes);
+                ui.label(format!("Main fuel: {main_fuel_str}"));
+                ui.label(format!(
+                    "({})",
+                    format_pso_delta(solo_total_fuel, main_total_fuel, false),
+                ));
+                ui.end_row();
+
+                ui.label(format!(
+                    "Main land: {}",
+                    format_land_km(main_total_land),
+                ));
+                ui.label(format!(
+                    "({})",
+                    format_pso_delta(solo_total_land, main_total_land, false),
+                ));
+                ui.end_row();
+
+                if let Some(mf) = main_fitness {
+                    let main_fit_str = if self.view.total_time_breakdown {
+                        format_fitness_magnitude(mf)
+                    } else {
+                        format!("{mf:.4}")
+                    };
+                    ui.label(format!("Main fit:  {main_fit_str}"));
+                    if let Some(sf) = solo_fitness {
+                        // `is_fitness=true` flips the delta sign
+                        // (fitness is negated cost — higher better),
+                        // matching the Bench grid's Fit row.
+                        ui.label(format!("({})", format_pso_delta(sf, mf, true)));
+                    } else {
+                        ui.label("");
+                    }
+                    ui.end_row();
+                }
+            });
+    }
+
+    /// View-source selector: a combo box that picks between the main
+    /// converged gbest and any of the per-member solo cohort
+    /// entries. Hidden when there's no solo cohort to choose from —
+    /// nothing for the user to pick.
+    fn render_summary_selector(&mut self, ui: &mut egui::Ui) {
+        if self.outputs.solo_runs.is_empty() {
+            return;
+        }
+        let current_label: String = match self.outputs.summary_selection {
+            SummarySelection::Gbest => "Main (gbest)".to_owned(),
+            SummarySelection::SoloMember(k) => self
+                .outputs
+                .solo_runs
+                .get(k)
+                .map(|run| format!("Solo: {}", run.name))
+                .unwrap_or_else(|| "Main (gbest)".to_owned()),
+        };
+        ui.horizontal(|ui| {
+            ui.label("View:");
+            egui::ComboBox::from_id_salt("summary_view_source")
+                .selected_text(current_label)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(
+                        &mut self.outputs.summary_selection,
+                        SummarySelection::Gbest,
+                        "Main (gbest)",
+                    );
+                    for (idx, run) in self.outputs.solo_runs.iter().enumerate() {
+                        ui.selectable_value(
+                            &mut self.outputs.summary_selection,
+                            SummarySelection::SoloMember(idx),
+                            format!("Solo: {}", run.name),
+                        );
+                    }
+                });
+        });
     }
 
     /// Per-member spread for the converged gbest path under an ensemble
@@ -628,44 +802,6 @@ impl BywindApp {
         });
         ui.end_row();
 
-        ui.label("Solo PSO").on_hover_text(
-            "Run K independent single-deterministic searches, one \
-             per ensemble member. Renders each result as a translucent \
-             overlay route so you can see what alternate routes each \
-             member's wind would produce — complementary to the \
-             ensemble spread, which only scores the chosen gbest. \
-             K× wallclock; the search runs in the background.",
-        );
-        let solo_running = self.solo_job.is_running();
-        let solo_enabled = self.search.ensemble_path.is_some() && !solo_running;
-        let solo_label = if solo_running {
-            // Match the main Run-Search button's idiom: caption gains a
-            // whole-second elapsed suffix while the worker is busy.
-            self.solo_started_at
-                .map(|t| format!("Solo running ({}s)…", t.elapsed().as_secs()))
-                .unwrap_or_else(|| "Solo running…".to_owned())
-        } else {
-            "Run solo per member".to_owned()
-        };
-        ui.horizontal(|ui| {
-            if ui
-                .add_enabled(solo_enabled, egui::Button::new(solo_label))
-                .clicked()
-            {
-                self.run_solo_per_member(ui.ctx());
-            }
-            if solo_running {
-                ui.spinner();
-            }
-            ui.checkbox(&mut self.view.show_solo_routes, "show")
-                .on_hover_text(
-                    "Overlay the K solo routes on the central panel. \
-                     Each route is a translucent polyline in a per-member \
-                     palette colour.",
-                );
-        });
-        ui.end_row();
-
         ui.label("Robust mode").on_hover_text(
             "Aggregation strategy when an ensemble directory is set. \
              `Full` runs K-fold robust fitness (currently mean of \
@@ -755,7 +891,63 @@ impl BywindApp {
                 ui.label("Searching…");
             });
         }
+
+        // "Run solo per member" is the secondary action that only
+        // makes sense after a main search has converged against an
+        // ensemble — gating on `route_evolution.is_some()` hides the
+        // button entirely (rather than disabled-greyed) when neither
+        // condition holds, so the routine single-deterministic
+        // workflow doesn't show a control that has nothing to do.
+        if self.search.ensemble_path.is_some() && self.outputs.route_evolution.is_some() {
+            let solo_running = self.solo_job.is_running();
+            let solo_label = if solo_running {
+                self.solo_started_at
+                    .map(|t| format!("Cancel solo ({}s)", t.elapsed().as_secs()))
+                    .unwrap_or_else(|| "Cancel solo".to_owned())
+            } else {
+                "Run solo per ensemble member".to_owned()
+            };
+            let solo_fill = if solo_running {
+                egui::Color32::from_rgb(180, 60, 60)
+            } else {
+                egui::Color32::from_rgb(70, 110, 160)
+            };
+            let solo_resp = ui
+                .add_sized(
+                    [ui.available_width(), 24.0],
+                    egui::Button::new(egui::RichText::new(solo_label).size(14.0))
+                        .fill(solo_fill),
+                )
+                .on_hover_text(
+                    "Run K independent single-deterministic searches, one per \
+                     ensemble member, so you can see what alternate routes each \
+                     member's wind would produce. K× wallclock; runs in the \
+                     background. Result lands as a translucent overlay; switch \
+                     the Summary dropdown to a member to see its totals.",
+                );
+            if solo_resp.clicked() {
+                if solo_running {
+                    self.solo_job.cancel();
+                    self.solo_started_at = None;
+                } else {
+                    self.run_solo_per_member(ui.ctx());
+                }
+            }
+            if solo_running {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label("Solo per member running…");
+                });
+            }
+        }
+
         ui.checkbox(&mut self.view.show_all_particles, "Show all particles");
+        ui.checkbox(&mut self.view.show_solo_routes, "Show solo routes")
+            .on_hover_text(
+                "Overlay the K solo per-member routes on the central panel. \
+                 Each route is a translucent polyline in a per-member palette \
+                 colour. No-op until you've run \"Run solo per ensemble member\".",
+            );
         ui.checkbox(&mut self.view.show_sdf_overlay, "Show SDF cells")
             .on_hover_text(
                 "Overlay the rasterised landmass SDF on top of the coastlines. \

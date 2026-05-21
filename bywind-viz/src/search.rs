@@ -72,6 +72,15 @@ pub(crate) struct SearchOutputs {
     #[serde(skip)]
     pub(crate) solo_runs: Vec<SoloMemberRun>,
 
+    /// Which route the right-side stats panel renders — the main
+    /// gbest or one of the solo cohort members. Bound to the Summary
+    /// dropdown + the solo legend rows; reset to `Gbest` on every
+    /// main Run Search (any prior solo selection is stale once the
+    /// gbest changes), clamped to a valid range on solo-cohort
+    /// success arrival.
+    #[serde(skip)]
+    pub(crate) summary_selection: SummarySelection,
+
     /// Wall-clock duration of the last completed wind-map bake (the
     /// `BakedWindMap::from_timed_map` work that runs on the search worker
     /// before the PSO loop starts). Time-only reopts triggered by Waypoint
@@ -104,7 +113,8 @@ pub(crate) struct SearchOutputs {
 /// member (not just how the converged gbest scores against them).
 pub(crate) struct SoloMemberRun {
     /// `.wcav` filename stem of the source member (e.g. `"gec00"`,
-    /// `"gep08"`). Used to label the overlay legend.
+    /// `"gep08"`). Used to label the overlay legend and the summary
+    /// dropdown.
     pub(crate) name: String,
     /// Full evolution for the per-member solo search. We keep the
     /// whole evolution rather than just the final path so the
@@ -112,4 +122,29 @@ pub(crate) struct SoloMemberRun {
     /// solo cohort alongside the gbest if we want to; today the draw
     /// layer reads only the final iteration.
     pub(crate) route_evolution: RouteEvolution,
+    /// Per-segment metrics for the final-iteration gbest of this
+    /// member's solo search, computed against this member's baked wind
+    /// at search-completion time. Pre-baked here (rather than at
+    /// display time) so switching the summary dropdown to this member
+    /// is a lookup, not a re-bake — and so we don't have to store K
+    /// extra baked wind maps in `outputs`.
+    pub(crate) segment_stats: Vec<SegmentMetrics>,
+    /// `best_fit` of the final-iteration gbest particle. Negated cost;
+    /// higher is better. Used by the Summary panel when this member
+    /// is the selected view source.
+    pub(crate) fitness: f64,
+}
+
+/// Which route the right-side stats panel renders.
+///
+/// `Gbest` is the historical default: the main converged gbest path
+/// plus its benchmark / ensemble metadata. `SoloMember(idx)` switches
+/// the summary + segments scroll to the `idx`-th entry of
+/// `outputs.solo_runs`; benchmark / ensemble blocks hide because
+/// they're about the main search, not the per-member solo.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
+pub(crate) enum SummarySelection {
+    #[default]
+    Gbest,
+    SoloMember(usize),
 }

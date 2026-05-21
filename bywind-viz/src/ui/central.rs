@@ -313,8 +313,12 @@ impl BywindApp {
     /// route belongs to e.g. `gec00` vs `gep08`. Rendered as a
     /// foreground `Area` so it floats above the panel without
     /// claiming layout space (mirrors the bundled-sample status
-    /// toast). No-op when `solo_runs` is empty.
-    fn render_solo_legend(&self, ui: &egui::Ui, panel_rect: egui::Rect) {
+    /// toast). Each row is a `selectable_value` bound to
+    /// `outputs.summary_selection` so clicking a member switches the
+    /// right-side Summary / Segments to that member's totals — same
+    /// effect as picking it from the Summary dropdown. No-op when
+    /// `solo_runs` is empty.
+    fn render_solo_legend(&mut self, ui: &egui::Ui, panel_rect: egui::Rect) {
         if self.outputs.solo_runs.is_empty() {
             return;
         }
@@ -322,7 +326,6 @@ impl BywindApp {
         egui::Area::new(id)
             .order(egui::Order::Foreground)
             .fixed_pos(panel_rect.left_top() + egui::Vec2::splat(MAP_PADDING * 0.5))
-            .interactable(false)
             .show(ui.ctx(), |ui| {
                 egui::Frame::popup(ui.style())
                     .fill(ui.visuals().panel_fill.gamma_multiply(0.85))
@@ -339,7 +342,11 @@ impl BywindApp {
                                     2.0,
                                     solo_palette_color(idx, 255),
                                 );
-                                ui.label(&run.name);
+                                ui.selectable_value(
+                                    &mut self.outputs.summary_selection,
+                                    crate::search::SummarySelection::SoloMember(idx),
+                                    &run.name,
+                                );
                             });
                         }
                     });

@@ -2,8 +2,9 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 
 use bywind::{
     BoatConfig, GenerateConfig, LonLatBbox, MapBounds, RobustMode, SearchConfig, SearchError,
-    SearchResult, SearchWeights, TimedWindMap, WindInput, route_evolution_match,
-    run_search_blocking, run_search_blocking_with_baked, run_time_reopt_blocking,
+    SearchResult, SearchWeights, TimedWindMap, WindInput, compute_segment_metrics,
+    route_evolution_match, run_search_blocking, run_search_blocking_with_baked,
+    run_time_reopt_blocking,
 };
 
 use crate::config::{EditorState, Tool, ViewState};
@@ -575,6 +576,12 @@ impl eframe::App for BywindApp {
                     // against the previous route bounds / endpoints
                     // and would draw stale routes over the new gbest.
                     self.outputs.solo_runs.clear();
+                    // Reset the Summary selector — a stale
+                    // `SoloMember(k)` would point into a now-empty
+                    // cohort, and `Gbest` is the only thing that
+                    // makes sense to show right after a new gbest.
+                    self.outputs.summary_selection =
+                        crate::search::SummarySelection::Gbest;
                 }
                 Err(e) => {
                     // Prior outputs stay displayed — discarding them
@@ -598,6 +605,19 @@ impl eframe::App for BywindApp {
             self.solo_started_at = None;
             match result {
                 Ok(runs) => {
+                    // Clamp a stale `SoloMember(k)` selection back to
+                    // `Gbest` if the new cohort doesn't have a `k`-th
+                    // member. K typically matches across reruns, but
+                    // re-fetching the ensemble dir with a different
+                    // member count would otherwise leave a dangling
+                    // index pointing past the new vector's end.
+                    if let crate::search::SummarySelection::SoloMember(k) =
+                        self.outputs.summary_selection
+                        && k >= runs.len()
+                    {
+                        self.outputs.summary_selection =
+                            crate::search::SummarySelection::Gbest;
+                    }
                     self.outputs.solo_runs = runs;
                 }
                 Err(e) => {
@@ -775,9 +795,40 @@ fn run_solo_per_member_search(
             sdf_resolution_deg,
             fine_sdf_resolution_deg,
         )?;
+        // Pre-bake the per-member segment metrics + final fitness so
+        // the Summary dropdown can switch to this member without
+        // re-computing — and so we don't have to store the per-member
+        // `BakedWindMap` in `outputs` to re-bake later. `result.baked`
+        // is this member's baked wind (the search returned ownership);
+        // it's about to be dropped, so this is the only chance to
+        // sample it.
+        let (segment_stats, fitness) =
+            route_evolution_match!(&result.route_evolution, |evo| {
+                let frames = evo.frames();
+                let last = frames
+                    .last()
+                    .expect("search returns at least one iteration");
+                let best = last
+                    .iter()
+                    .max_by(|a, b| {
+                        a.best_fit
+                            .partial_cmp(&b.best_fit)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .expect("each iteration has at least one particle");
+                let stats = compute_segment_metrics(
+                    &result.boat,
+                    &result.baked,
+                    best.best_pos,
+                    route_bounds.step_distance_max,
+                );
+                (stats, best.best_fit)
+            });
         solo_runs.push(SoloMemberRun {
             name: name.clone(),
             route_evolution: result.route_evolution,
+            segment_stats,
+            fitness,
         });
     }
     Ok(solo_runs)
