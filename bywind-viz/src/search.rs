@@ -64,6 +64,14 @@ pub(crate) struct SearchOutputs {
     #[serde(skip)]
     pub(crate) ensemble: Option<EnsembleAssessment>,
 
+    /// K independent single-deterministic PSO results, one per
+    /// ensemble member. Populated only when the user clicks
+    /// "Run solo per member"; empty otherwise. Cleared on any main
+    /// Run Search so a stale cohort doesn't get drawn against a
+    /// freshly-changed route bbox / endpoints.
+    #[serde(skip)]
+    pub(crate) solo_runs: Vec<SoloMemberRun>,
+
     /// Wall-clock duration of the last completed wind-map bake (the
     /// `BakedWindMap::from_timed_map` work that runs on the search worker
     /// before the PSO loop starts). Time-only reopts triggered by Waypoint
@@ -87,4 +95,21 @@ pub(crate) struct SearchOutputs {
     /// search starts; not persisted (session-local state).
     #[serde(skip)]
     pub(crate) last_search_seed: Option<u64>,
+}
+
+/// One ensemble member's independent PSO result. Produced by the
+/// "Run solo per member" button — a separate dispatch from the main
+/// Run Search that runs K single-deterministic searches against each
+/// member, so the user can see *what alternate routes look like* per
+/// member (not just how the converged gbest scores against them).
+pub(crate) struct SoloMemberRun {
+    /// `.wcav` filename stem of the source member (e.g. `"gec00"`,
+    /// `"gep08"`). Used to label the overlay legend.
+    pub(crate) name: String,
+    /// Full evolution for the per-member solo search. We keep the
+    /// whole evolution rather than just the final path so the
+    /// iteration scrubber in the main UI could (later) animate the
+    /// solo cohort alongside the gbest if we want to; today the draw
+    /// layer reads only the final iteration.
+    pub(crate) route_evolution: RouteEvolution,
 }

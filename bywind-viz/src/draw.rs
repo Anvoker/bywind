@@ -1354,6 +1354,85 @@ fn draw_dashed_segment(
     }
 }
 
+/// Translucent palette colour for the `idx`-th solo route, cycling
+/// past `SOLO_PALETTE.len()`. Hand-picked to be visually distinct
+/// against blue wind barbs and the orange / red / green gbest path —
+/// no member's colour collides with the start / end / waypoint
+/// markers, and pairs of adjacent indices are far apart in hue so
+/// neighbouring members read as different paths even at low alpha.
+pub(crate) fn solo_palette_color(idx: usize, alpha: u8) -> egui::Color32 {
+    const SOLO_PALETTE: &[(u8, u8, u8)] = &[
+        (255, 99, 132),  // pink
+        (54, 162, 235),  // blue
+        (255, 206, 86),  // yellow
+        (75, 192, 192),  // teal
+        (153, 102, 255), // purple
+        (255, 159, 64),  // bright orange
+        (180, 220, 120), // lime
+        (220, 130, 220), // magenta
+    ];
+    let (r, g, b) = SOLO_PALETTE[idx % SOLO_PALETTE.len()];
+    egui::Color32::from_rgba_unmultiplied(r, g, b, alpha)
+}
+
+/// Polyline-only path draw for the solo per-member overlay. Reuses
+/// the same antimeridian-unwrap + shadow-tile loop as [`draw_path`]
+/// so a solo route that crosses the seam still appears across both
+/// halves of the map, but omits node markers and waypoint labels —
+/// K members worth of marker noise on top of the gbest path would
+/// drown out the main route. The caller picks `stroke_color` (see
+/// [`solo_palette_color`]).
+pub(crate) fn draw_solo_route<const N: usize>(
+    painter: &egui::Painter,
+    path: &Path<N>,
+    view: &ViewTransform,
+    stroke_color: egui::Color32,
+) {
+    let mut points: Vec<egui::Pos2> = (0..path.len())
+        .map(|i| {
+            let v = path.lat_lon(i);
+            view.route_to_screen(v.lon, v.lat)
+        })
+        .collect();
+    if points.len() < 2 {
+        return;
+    }
+    let world_width_px = world_width_pixels(view);
+    if world_width_px.is_finite() && world_width_px > 0.0 {
+        let half = world_width_px * 0.5;
+        let mut prev_x = points.first().map_or(0.0, |p| p.x);
+        for p in points.iter_mut().skip(1) {
+            let dx = p.x - prev_x;
+            if dx > half {
+                p.x -= world_width_px;
+            } else if dx < -half {
+                p.x += world_width_px;
+            }
+            prev_x = p.x;
+        }
+    }
+    let (path_x_min, path_x_max) = points
+        .iter()
+        .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), p| {
+            (lo.min(p.x), hi.max(p.x))
+        });
+    let panel = painter.clip_rect();
+    let stroke = egui::Stroke::new(1.5, stroke_color);
+    for shift in shadow_offsets(world_width_px) {
+        if !shift.is_finite() {
+            continue;
+        }
+        if path_x_max + shift < panel.min.x || path_x_min + shift > panel.max.x {
+            continue;
+        }
+        for w in points.windows(2) {
+            if let [a, b] = w {
+                painter.line_segment([shift_x(*a, shift), shift_x(*b, shift)], stroke);
+            }
+        }
+    }
+}
+
 #[expect(
     clippy::too_many_arguments,
     reason = "render orchestrator pulls together view, evolution, baked wind, boat, bounds, weights, and stats — splitting any of these into a struct would just shuffle the parameter list"

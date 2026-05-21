@@ -628,6 +628,44 @@ impl BywindApp {
         });
         ui.end_row();
 
+        ui.label("Solo PSO").on_hover_text(
+            "Run K independent single-deterministic searches, one \
+             per ensemble member. Renders each result as a translucent \
+             overlay route so you can see what alternate routes each \
+             member's wind would produce — complementary to the \
+             ensemble spread, which only scores the chosen gbest. \
+             K× wallclock; the search runs in the background.",
+        );
+        let solo_running = self.solo_job.is_running();
+        let solo_enabled = self.search.ensemble_path.is_some() && !solo_running;
+        let solo_label = if solo_running {
+            // Match the main Run-Search button's idiom: caption gains a
+            // whole-second elapsed suffix while the worker is busy.
+            self.solo_started_at
+                .map(|t| format!("Solo running ({}s)…", t.elapsed().as_secs()))
+                .unwrap_or_else(|| "Solo running…".to_owned())
+        } else {
+            "Run solo per member".to_owned()
+        };
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(solo_enabled, egui::Button::new(solo_label))
+                .clicked()
+            {
+                self.run_solo_per_member(ui.ctx());
+            }
+            if solo_running {
+                ui.spinner();
+            }
+            ui.checkbox(&mut self.view.show_solo_routes, "show")
+                .on_hover_text(
+                    "Overlay the K solo routes on the central panel. \
+                     Each route is a translucent polyline in a per-member \
+                     palette colour.",
+                );
+        });
+        ui.end_row();
+
         ui.label("Robust mode").on_hover_text(
             "Aggregation strategy when an ensemble directory is set. \
              `Full` runs K-fold robust fitness (currently mean of \

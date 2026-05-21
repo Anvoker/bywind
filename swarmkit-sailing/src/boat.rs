@@ -7,6 +7,7 @@ use crate::{Sailboat, WindSource};
 /// cubic SFC for fuel rate. Used as the boat type for the bywind sailing
 /// search; see [`Boat::default`] for the calibrated mid-size-marine-diesel
 /// preset that the rest of the workspace exercises in tests and examples.
+#[derive(Clone, Copy, Debug)]
 pub struct Boat {
     /// Maximum continuous engine rating (watts).
     pub mcr: f64,

@@ -7,7 +7,7 @@ use bywind::{
 };
 
 use crate::config::{EditorState, Tool, ViewState};
-use crate::search::{ReoptMsg, SearchOutputs};
+use crate::search::{ReoptMsg, SearchOutputs, SoloMemberRun};
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -38,6 +38,20 @@ pub struct BywindApp {
     /// Each new drag overwrites the slot, cancelling the prior worker.
     #[serde(skip)]
     pub(crate) reopt_job: AsyncJob<ReoptMsg>,
+
+    /// Background per-member solo-PSO cohort. Fired from the
+    /// "Run solo per member" button; on success its payload replaces
+    /// `outputs.solo_runs`. Independent of `search_job` so a main
+    /// search can run alongside (though the UI gates them sequentially
+    /// today to keep CPU contention predictable).
+    #[serde(skip)]
+    pub(crate) solo_job: AsyncJob<Result<Vec<SoloMemberRun>, SearchError>>,
+
+    /// Wall-clock instant the running solo cohort started, mirroring
+    /// `search_started_at` so the button can show elapsed time while
+    /// the K-search loop is running.
+    #[serde(skip)]
+    pub(crate) solo_started_at: Option<std::time::Instant>,
 
     /// Background decoder for the embedded `wind_av1` sample dataset.
     /// Spawned at startup when `assets/sample_wind.wcav` was present at
@@ -83,6 +97,8 @@ impl Default for BywindApp {
             search_job: AsyncJob::default(),
             search_started_at: None,
             reopt_job: AsyncJob::default(),
+            solo_job: AsyncJob::default(),
+            solo_started_at: None,
             bundled_sample_job: AsyncJob::default(),
             #[cfg(not(target_arch = "wasm32"))]
             fetch_job: crate::fetch::FetchJob::default(),
@@ -299,6 +315,99 @@ impl BywindApp {
         self.search_started_at = Some(std::time::Instant::now());
     }
 
+    /// Per-member solo PSO cohort. Runs K independent
+    /// single-deterministic searches, one per ensemble member, so the
+    /// user can see what alternate routes each member's wind would
+    /// produce — complement to the ensemble assessment, which only
+    /// scores the chosen gbest against each member. Requires
+    /// `ensemble_path` and a route bbox to be set; otherwise reports a
+    /// toast and bails. The K searches run sequentially in the worker
+    /// to keep CPU usage predictable (each search is already
+    /// internally rayon-parallel).
+    pub(crate) fn run_solo_per_member(&mut self, ctx: &egui::Context) {
+        if self.solo_job.is_running() {
+            return;
+        }
+        let Some(ensemble_path) = self.search.ensemble_path.clone() else {
+            self.report_error(
+                "Solo per-member needs an ensemble dir set in Advanced Params.".to_owned(),
+            );
+            return;
+        };
+        let Some(route_bbox) = self.editor.route_bbox else {
+            self.report_error(
+                "Solo per-member needs a route bbox to size the bake. Draw one with \
+                 the Route Bounds tool, then click Run solo per member."
+                    .to_owned(),
+            );
+            return;
+        };
+        if let Err(e) = self.boat.validate() {
+            self.report_error(format!("Invalid boat config — {e}"));
+            return;
+        }
+        if let Err(e) = self.search.validate() {
+            self.report_error(format!("Invalid search config — {e}"));
+            return;
+        }
+        let map_bounds = MapBounds {
+            bbox: LonLatBbox::new(route_bbox.0, route_bbox.1, route_bbox.2, route_bbox.3),
+        };
+        let bounds = map_bounds.clamp_to(Some(route_bbox));
+        if !bounds.is_non_degenerate() {
+            self.report_error(
+                "Route Bounds rectangle is degenerate; clear it or redraw.".to_owned(),
+            );
+            return;
+        }
+        let (origin, destination) =
+            bounds.resolve_endpoints(self.editor.start_waypoint, self.editor.end_waypoint);
+        self.editor.highlight_endpoint_tool = false;
+        let route_bounds = bounds.to_route_bounds_with_step_fraction(
+            origin,
+            destination,
+            self.search.step_distance_fraction,
+        );
+        let bake_bounds = bounds.to_bake_bounds(self.search.bake_step_deg);
+        let sdf_resolution = self.search.sdf_resolution_deg;
+        let fine_sdf_resolution = self.search.fine_sdf_resolution_deg;
+        let waypoint_count = self.search.waypoint_count;
+        let weights = SearchWeights {
+            time_weight: self.search.time_weight,
+            fuel_weight: self.search.fuel_weight,
+            land_weight: self.search.land_weight,
+        };
+        // Resolve the seed up front like `run_search`. We then derive
+        // per-member seeds as `base + k` inside the worker so distinct
+        // members aren't initialised with the exact same swarm cloud —
+        // identical seeds would let two near-identical winds collapse
+        // to bit-identical routes, defeating the point of an overlay.
+        let mut search_settings = self.search.to_search_settings();
+        let base_seed = search_settings.seed.unwrap_or_else(rand::random);
+        search_settings.seed = Some(base_seed);
+        let ship = self.boat.to_boat();
+        let ctx = ctx.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = run_solo_per_member_search(
+                &ensemble_path,
+                bake_bounds,
+                route_bounds,
+                waypoint_count,
+                search_settings,
+                base_seed,
+                ship,
+                weights,
+                sdf_resolution,
+                fine_sdf_resolution,
+            );
+            drop(tx.send(result));
+            ctx.request_repaint();
+        });
+        self.solo_job.set_running(rx);
+        self.solo_started_at = Some(std::time::Instant::now());
+    }
+
     /// Re-run only the time PSO with the user-edited xy fixed. Each
     /// drag-release overwrites the slot so the prior reopt is cancelled.
     pub(crate) fn start_time_reopt(&mut self, ctx: &egui::Context) {
@@ -462,6 +571,10 @@ impl eframe::App for BywindApp {
                     self.outputs.bake_duration = Some(bake_duration);
                     self.outputs.search_duration = Some(search_duration);
                     self.outputs.ensemble = ensemble;
+                    // Drop any prior solo cohort — it was scored
+                    // against the previous route bounds / endpoints
+                    // and would draw stale routes over the new gbest.
+                    self.outputs.solo_runs.clear();
                 }
                 Err(e) => {
                     // Prior outputs stay displayed — discarding them
@@ -475,6 +588,22 @@ impl eframe::App for BywindApp {
         // and totals refresh on the next render.
         if let Some(msg) = self.reopt_job.poll() {
             self.apply_reopt_result(&msg);
+        }
+
+        // Solo per-member cohort lands as a `Vec<SoloMemberRun>` —
+        // assign wholesale, overwriting any prior cohort. Failures
+        // surface a toast and leave the previous cohort visible (same
+        // policy as the main search arm).
+        if let Some(result) = self.solo_job.poll() {
+            self.solo_started_at = None;
+            match result {
+                Ok(runs) => {
+                    self.outputs.solo_runs = runs;
+                }
+                Err(e) => {
+                    self.report_error(format!("Solo per-member failed — {e}"));
+                }
+            }
         }
 
         // The embedded-sample decoder runs once at startup. When it
@@ -589,6 +718,69 @@ fn run_ensemble_search(
         sdf_resolution_deg,
         fine_sdf_resolution_deg,
     )
+}
+
+/// Worker-side per-member solo cohort. Loads + bakes the ensemble
+/// once, then runs K single-deterministic searches — one per member,
+/// each with seed `base_seed + k` so identically-initialised swarms
+/// don't collapse near-identical winds to bit-identical routes.
+///
+/// Sequential rather than rayon-parallel: each inner search is
+/// already internally parallel via rayon's global pool, so nesting
+/// would oversubscribe cores. On a K=3 GEFS smoke this is ~3× the
+/// wallclock of a single search; on K=31 (full GEFS) it's ~31×.
+///
+/// First failure short-circuits the whole cohort (returns the error)
+/// so a wind input that's infeasible for one member doesn't quietly
+/// publish a partial overlay.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "glue function bridging Run-Solo button to the inner search; \
+              bundling args would just shuffle them around"
+)]
+fn run_solo_per_member_search(
+    ensemble_path: &std::path::Path,
+    bake_bounds: bywind::wind_map::BakeBounds,
+    route_bounds: bywind::RouteBounds,
+    waypoint_count: bywind::WaypointCount,
+    mut search_settings: bywind::SearchSettings,
+    base_seed: u64,
+    ship: bywind::Boat,
+    weights: SearchWeights,
+    sdf_resolution_deg: f64,
+    fine_sdf_resolution_deg: Option<f64>,
+) -> Result<Vec<SoloMemberRun>, SearchError> {
+    let ensemble = match bywind::TimedEnsembleWindMap::load_dir(ensemble_path) {
+        Ok(e) => e,
+        Err(e) => {
+            log::error!("ensemble load failed: {e}");
+            return Err(SearchError::NoFeasibleRoute {
+                best_fit: f64::NAN,
+            });
+        }
+    };
+    let baked = ensemble.bake(bake_bounds);
+    let names = baked.member_names().to_vec();
+    let mut solo_runs = Vec::with_capacity(names.len());
+    for (k, name) in names.iter().enumerate() {
+        search_settings.seed = Some(base_seed.wrapping_add(k as u64));
+        let member_baked = baked.member(k).clone();
+        let result = run_search_blocking_with_baked(
+            WindInput::single(member_baked),
+            route_bounds,
+            waypoint_count,
+            search_settings,
+            ship,
+            weights,
+            sdf_resolution_deg,
+            fine_sdf_resolution_deg,
+        )?;
+        solo_runs.push(SoloMemberRun {
+            name: name.clone(),
+            route_evolution: result.route_evolution,
+        });
+    }
+    Ok(solo_runs)
 }
 
 #[cfg(test)]
