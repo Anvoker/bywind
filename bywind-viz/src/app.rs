@@ -2,8 +2,9 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 
 use bywind::{
     BoatConfig, EnsembleMode, GenerateConfig, LonLatBbox, MapBounds, RealizationRun, SearchConfig,
-    SearchError, SearchResult, SearchWeights, TimedWindMap, WindInput, route_evolution_match,
-    run_realizations, run_search_blocking, run_search_blocking_with_baked, run_time_reopt_blocking,
+    SearchError, SearchProgressEvent, SearchResult, SearchWeights, TimedWindMap, WindInput,
+    route_evolution_match, run_realizations, run_search_blocking, run_search_blocking_with_baked,
+    run_time_reopt_blocking,
 };
 
 use crate::config::{EditorState, Tool, ViewState};
@@ -60,6 +61,14 @@ pub struct BywindApp {
     #[serde(skip)]
     pub(crate) bundled_sample_job: AsyncJob<Result<TimedWindMap, String>>,
 
+    /// Side channel carrying in-progress events from the search worker
+    /// (e.g. the A* benchmark, which is computed before the main PSO
+    /// and worth showing immediately). Separate from `search_job` so
+    /// that abstraction stays single-shot for the terminal result.
+    /// `None` between searches.
+    #[serde(skip)]
+    pub(crate) search_progress_rx: Option<std::sync::mpsc::Receiver<SearchProgressEvent>>,
+
     /// Background worker + log buffer for `File → Fetch from AWS…`.
     /// Streams `bywind::fetch::FetchProgress` events back via mpsc and
     /// holds the shared cancel flag.
@@ -108,6 +117,7 @@ impl Default for BywindApp {
             reopt_job: AsyncJob::default(),
             realization_job: AsyncJob::default(),
             realization_started_at: None,
+            search_progress_rx: None,
             bundled_sample_job: AsyncJob::default(),
             #[cfg(not(target_arch = "wasm32"))]
             fetch_job: crate::fetch::FetchJob::default(),
@@ -278,11 +288,27 @@ impl BywindApp {
         let ship = self.boat.to_boat();
         let ensemble_mode = self.search.ensemble_mode;
         let (tx, rx) = std::sync::mpsc::channel();
+        // Side channel for in-progress events (currently just the A*
+        // benchmark, emitted before the main PSO begins). Stored on
+        // the app so the per-frame poll can drain it; cleared when
+        // the terminal `Done` event arrives.
+        let (progress_tx, progress_rx) = std::sync::mpsc::channel::<SearchProgressEvent>();
+        self.search_progress_rx = Some(progress_rx);
+        // Drop any benchmark from a previous search so the dashed
+        // overlay doesn't linger as a stale reference while the new
+        // search runs. The new bench lands via `BenchmarkReady` as
+        // soon as the worker's A* + time-PSO step completes.
+        self.outputs.benchmark = None;
 
         if let Some(ensemble_path) = ensemble_dispatch {
             // Ensemble path: load + bake + search all in the worker
             // thread so the UI stays responsive during the ~3 s load.
             std::thread::spawn(move || {
+                let ctx_progress = ctx.clone();
+                let mut progress = move |ev: SearchProgressEvent| {
+                    drop(progress_tx.send(ev));
+                    ctx_progress.request_repaint();
+                };
                 let result = run_ensemble_search(
                     &ensemble_path,
                     bake_bounds,
@@ -294,6 +320,7 @@ impl BywindApp {
                     sdf_resolution,
                     fine_sdf_resolution,
                     ensemble_mode,
+                    &mut progress,
                 );
                 drop(tx.send(result));
                 ctx.request_repaint();
@@ -310,6 +337,11 @@ impl BywindApp {
                 .expect("wind_map presence is checked at the top of run_search")
                 .clone();
             std::thread::spawn(move || {
+                let ctx_progress = ctx.clone();
+                let mut progress = move |ev: SearchProgressEvent| {
+                    drop(progress_tx.send(ev));
+                    ctx_progress.request_repaint();
+                };
                 let result = run_search_blocking(
                     &wind_map_snapshot,
                     bake_bounds,
@@ -320,6 +352,7 @@ impl BywindApp {
                     weights,
                     sdf_resolution,
                     fine_sdf_resolution,
+                    &mut progress,
                 );
                 drop(tx.send(result));
                 ctx.request_repaint();
@@ -570,6 +603,33 @@ impl eframe::App for BywindApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.apply_ctrl_pointer_override(ui.ctx());
 
+        // Drain any in-flight search-progress events before polling
+        // the terminal result. Today the only progress event is
+        // `BenchmarkReady`, which lands `outputs.benchmark` as soon
+        // as the worker's A* + time-PSO step finishes — well before
+        // the main PSO completes — so the dashed reference overlay
+        // paints right away instead of waiting for the whole search.
+        if let Some(rx) = self.search_progress_rx.as_ref() {
+            loop {
+                match rx.try_recv() {
+                    Ok(SearchProgressEvent::BenchmarkReady(b)) => {
+                        self.outputs.benchmark = Some(b);
+                    }
+                    // `SearchProgressEvent` is `#[non_exhaustive]`;
+                    // future event kinds (e.g. per-iteration gbest)
+                    // land here and get ignored until we hook them up.
+                    Ok(_) => {}
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        // Worker dropped its sender — drop our receiver
+                        // too so subsequent frames skip the poll.
+                        self.search_progress_rx = None;
+                        break;
+                    }
+                }
+            }
+        }
+
         if let Some(msg) = self.search_job.poll() {
             self.search_started_at = None;
             match msg {
@@ -751,6 +811,7 @@ fn run_ensemble_search(
     sdf_resolution_deg: f64,
     fine_sdf_resolution_deg: Option<f64>,
     ensemble_mode: EnsembleMode,
+    progress: &mut dyn FnMut(SearchProgressEvent),
 ) -> Result<SearchResult, SearchError> {
     let ensemble = match bywind::TimedEnsembleWindMap::load_dir(ensemble_path) {
         Ok(e) => e,
@@ -775,6 +836,7 @@ fn run_ensemble_search(
         weights,
         sdf_resolution_deg,
         fine_sdf_resolution_deg,
+        progress,
     )
 }
 

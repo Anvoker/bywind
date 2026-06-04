@@ -60,6 +60,7 @@ fn run_with_wind(wind: WindInput, bounds: MapBounds) -> SearchResult {
         weights,
         bywind::SDF_RESOLUTION_DEG,
         None,
+        &mut |_| {},
     )
     .expect("smoke inputs produce a feasible route")
 }

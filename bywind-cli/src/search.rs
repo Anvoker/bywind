@@ -487,6 +487,7 @@ fn execute_search(
             weights,
             search_cfg.sdf_resolution_deg,
             search_cfg.fine_sdf_resolution_deg,
+            &mut |_| {},
         )
         .map_err(|e| AppError::no_result(anyhow!("{e}"))),
         WindSource::Fresh(map) => {
@@ -501,6 +502,7 @@ fn execute_search(
                 weights,
                 search_cfg.sdf_resolution_deg,
                 search_cfg.fine_sdf_resolution_deg,
+                &mut |_| {},
             )
             .map_err(|e| AppError::no_result(anyhow!("{e}")))?;
             if let Some(save_path) = save_baked {
@@ -542,6 +544,7 @@ fn execute_search(
                 weights,
                 search_cfg.sdf_resolution_deg,
                 search_cfg.fine_sdf_resolution_deg,
+                &mut |_| {},
             )
             .map_err(|e| AppError::no_result(anyhow!("{e}")))
         }

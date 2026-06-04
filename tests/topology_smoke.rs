@@ -73,6 +73,7 @@ fn run_one(topology: Topology) -> f64 {
         // hold the configuration to single-tier to keep that pinned value
         // independent of the carve-out list / fine-tier defaults.
         None,
+        &mut |_| {},
     )
     .expect("smoke test inputs produce a feasible route");
     let route_evolution = result.route_evolution;

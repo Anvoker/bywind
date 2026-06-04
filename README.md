@@ -93,6 +93,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         boat.to_boat(),
         weights,
         SDF_RESOLUTION_DEG,
+        None, // fine_sdf_resolution_deg — `None` = single-tier landmass
+        &mut |_| {}, // ignore in-flight progress events; the final result is enough
     )?;
 
     Ok(())

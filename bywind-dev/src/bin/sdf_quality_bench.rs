@@ -177,6 +177,7 @@ fn run_scenario(scenario: &Scenario, wind: &TimedWindMap) {
                 // apples-to-apples — adding a fine tier per resolution
                 // would conflate two effects.
                 None,
+                &mut |_| {},
             )
             .expect("search failed");
             let search_secs = start.elapsed().as_secs_f64();

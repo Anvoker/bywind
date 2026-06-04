@@ -265,6 +265,7 @@ fn run_route(
             weights,
             search_cfg.sdf_resolution_deg,
             search_cfg.fine_sdf_resolution_deg,
+            &mut |_| {},
         )
         .map_err(|e| AppError::no_result(anyhow!("route `{slug}` seed {seed} — {e}",)))?;
         let evolution = result.route_evolution;

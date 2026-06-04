@@ -164,6 +164,12 @@ pub fn run_realizations(
 ) -> Result<Vec<RealizationRun>, SearchError> {
     let names = ensemble.member_names().to_vec();
     let mut runs = Vec::with_capacity(names.len());
+    // Per-realization runs don't emit progress upward: each one
+    // computes its own benchmark, which is meaningful per-realization
+    // but doesn't map onto the main-search "live bench overlay" UX.
+    // Bench is the *main* search's reference; realization overlays
+    // would just stomp on it.
+    let mut no_progress = |_: SearchProgressEvent| {};
     for (k, name) in names.iter().enumerate() {
         search_settings.seed = Some(base_seed.wrapping_add(k as u64));
         let member_baked = ensemble.member(k).clone();
@@ -176,6 +182,7 @@ pub fn run_realizations(
             weights,
             sdf_resolution_deg,
             fine_sdf_resolution_deg,
+            &mut no_progress,
         )?;
         // Pre-compute segment metrics + final fitness against the
         // realization's wind while we still own the baked grid. The
@@ -353,6 +360,7 @@ pub fn run_search_blocking(
     weights: SearchWeights,
     sdf_resolution_deg: f64,
     fine_sdf_resolution_deg: Option<f64>,
+    progress: &mut dyn FnMut(SearchProgressEvent),
 ) -> Result<SearchResult, SearchError> {
     let bake_start = std::time::Instant::now();
     let baked = wind_map.bake(bake_bounds);
@@ -366,10 +374,36 @@ pub fn run_search_blocking(
         weights,
         sdf_resolution_deg,
         fine_sdf_resolution_deg,
+        progress,
     )?;
     // Inner call zero-init'd `bake_duration`; patch in the real value.
     result.bake_duration = bake_duration;
     Ok(result)
+}
+
+/// In-flight progress notifications emitted by [`run_search_blocking`]
+/// and [`run_search_blocking_with_baked`] over the course of a search.
+///
+/// A search worker can install a `&mut dyn FnMut(SearchProgressEvent)`
+/// closure to receive these events as soon as the corresponding work
+/// finishes — letting the UI paint partial results before the
+/// terminal `SearchResult` lands. Today only the benchmark route fires
+/// a progress event; per-iteration gbest updates may join later.
+///
+/// Variants are `#[non_exhaustive]` so new event kinds (e.g. an
+/// iteration-completed event) can land without breaking existing
+/// match arms; consumers should always include a default arm.
+#[non_exhaustive]
+#[derive(Clone, Debug)]
+pub enum SearchProgressEvent {
+    /// A* + time-PSO benchmark route, emitted **before** the main PSO
+    /// starts. The benchmark is the cheap reference the user compares
+    /// the main result against; surfacing it early lets the UI draw
+    /// the dashed bench overlay while the search is still running. Not
+    /// emitted when A* couldn't find a sea path (landlocked endpoints
+    /// / bbox excludes all water); the search continues but there's
+    /// no benchmark to compare against in that case.
+    BenchmarkReady(BenchmarkRoute),
 }
 
 /// Per-search wind input: a single deterministic baked map, or an
@@ -435,6 +469,7 @@ pub fn run_search_blocking_with_baked(
     weights: SearchWeights,
     sdf_resolution_deg: f64,
     fine_sdf_resolution_deg: Option<f64>,
+    progress: &mut dyn FnMut(SearchProgressEvent),
 ) -> Result<SearchResult, SearchError> {
     let search_start = std::time::Instant::now();
     // Resolve the wind input into one of two physical search modes:
@@ -459,6 +494,7 @@ pub fn run_search_blocking_with_baked(
                     weights,
                     land,
                     search_start,
+                    progress,
                 )
             }
             Some(fine) => {
@@ -472,6 +508,7 @@ pub fn run_search_blocking_with_baked(
                     weights,
                     land,
                     search_start,
+                    progress,
                 )
             }
         },
@@ -492,6 +529,7 @@ pub fn run_search_blocking_with_baked(
                     weights,
                     land,
                     search_start,
+                    progress,
                 )
             }
             Some(fine) => {
@@ -506,6 +544,7 @@ pub fn run_search_blocking_with_baked(
                     weights,
                     land,
                     search_start,
+                    progress,
                 )
             }
         },
@@ -536,6 +575,7 @@ fn run_search_inner<LS: LandmassSource>(
     weights: SearchWeights,
     land: &LS,
     search_start: std::time::Instant,
+    progress: &mut dyn FnMut(SearchProgressEvent),
 ) -> Result<SearchResult, SearchError> {
     let (route_evolution, boat, benchmark, best_fit) = waypoint_match!(waypoint_count, N, wrap, {
         let fit_calc = SailboatFitCalc::<N, _, _, _> {
@@ -548,6 +588,23 @@ fn run_search_inner<LS: LandmassSource>(
             wind_source: &baked,
             landmass: land,
         };
+        // Compute the benchmark first so the UI can paint the A*-based
+        // reference overlay before the main PSO kicks off. The bench
+        // doesn't depend on the PSO result; it's an independent A* sea
+        // path + time-PSO refinement. Emitting the event drops the
+        // user-visible "search is alive" latency from "wait for the
+        // full result" to "wait for A* + time-PSO" (typically <2 s).
+        let benchmark = compute_benchmark::<N, _, _>(
+            &ship,
+            &baked,
+            land,
+            route_bounds,
+            &fit_calc,
+            search_settings,
+        );
+        if let Some(b) = &benchmark {
+            progress(SearchProgressEvent::BenchmarkReady(b.clone()));
+        }
         let (gbest, evolution) = search::<N, _, _, _, _>(
             &ship,
             &baked,
@@ -572,14 +629,6 @@ fn run_search_inner<LS: LandmassSource>(
                 }
             }
         }
-        let benchmark = compute_benchmark::<N, _, _>(
-            &ship,
-            &baked,
-            land,
-            route_bounds,
-            &fit_calc,
-            search_settings,
-        );
         (wrap(evolution), ship, benchmark, gbest.best_fit)
     });
     if !best_fit.is_finite() {
@@ -636,6 +685,7 @@ fn run_search_inner_ensemble<LS: LandmassSource>(
     weights: SearchWeights,
     land: &LS,
     search_start: std::time::Instant,
+    progress: &mut dyn FnMut(SearchProgressEvent),
 ) -> Result<SearchResult, SearchError> {
     let (route_evolution, boat, benchmark, best_fit, ensemble_spread) =
         waypoint_match!(waypoint_count, N, wrap, {
@@ -650,6 +700,33 @@ fn run_search_inner_ensemble<LS: LandmassSource>(
             landmass: land,
             robust_objective: RobustObjective::Mean,
         };
+        // Benchmark uses single-wind fit calc against the mean — a
+        // "mean-wind reference" the user can read alongside the
+        // ensemble PSO result. Compute it first so the UI can paint
+        // the dashed bench overlay before the K-fold PSO begins;
+        // K-fold can take meaningful wallclock at K=31, and showing
+        // the bench up-front lets the user see the search is alive.
+        let bench_fit_calc = SailboatFitCalc::<N, _, _, _> {
+            time_weight: weights.time_weight,
+            fuel_weight: weights.fuel_weight,
+            land_weight: weights.land_weight,
+            departure_time: 0.0,
+            step_distance_max: route_bounds.step_distance_max,
+            ship: &ship,
+            wind_source: &mean,
+            landmass: land,
+        };
+        let benchmark = compute_benchmark::<N, _, _>(
+            &ship,
+            &mean,
+            land,
+            route_bounds,
+            &bench_fit_calc,
+            search_settings,
+        );
+        if let Some(b) = &benchmark {
+            progress(SearchProgressEvent::BenchmarkReady(b.clone()));
+        }
         // PSO uses ensemble K-fold; baselines / boundary repulsion
         // query the mean wind (single representative). The init code
         // only needs `WindSource::sample_wind`, not per-member
@@ -678,27 +755,6 @@ fn run_search_inner_ensemble<LS: LandmassSource>(
                 }
             }
         }
-        // Benchmark uses single-wind fit calc against the mean. This
-        // makes the bench a "mean-wind reference" the user can read
-        // alongside the ensemble PSO result.
-        let bench_fit_calc = SailboatFitCalc::<N, _, _, _> {
-            time_weight: weights.time_weight,
-            fuel_weight: weights.fuel_weight,
-            land_weight: weights.land_weight,
-            departure_time: 0.0,
-            step_distance_max: route_bounds.step_distance_max,
-            ship: &ship,
-            wind_source: &mean,
-            landmass: land,
-        };
-        let benchmark = compute_benchmark::<N, _, _>(
-            &ship,
-            &mean,
-            land,
-            route_bounds,
-            &bench_fit_calc,
-            search_settings,
-        );
         // Per-member spread of the converged gbest path's metrics: hold
         // the spatial geometry `xy` fixed and time-reopt `t` against
         // each member's wind, then walk the reopt'd path for `(time,
