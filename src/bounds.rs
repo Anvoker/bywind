@@ -37,20 +37,24 @@ impl MapBounds {
             return None;
         }
         Some(Self {
-            bbox: LonLatBbox::new(
-                rows.iter()
+            bbox: LonLatBbox {
+                lon_min: rows
+                    .iter()
                     .map(|r| f64::from(r.lon))
                     .fold(f64::INFINITY, f64::min),
-                rows.iter()
+                lon_max: rows
+                    .iter()
                     .map(|r| f64::from(r.lon))
                     .fold(f64::NEG_INFINITY, f64::max),
-                rows.iter()
+                lat_min: rows
+                    .iter()
                     .map(|r| f64::from(r.lat))
                     .fold(f64::INFINITY, f64::min),
-                rows.iter()
+                lat_max: rows
+                    .iter()
                     .map(|r| f64::from(r.lat))
                     .fold(f64::NEG_INFINITY, f64::max),
-            ),
+            },
         })
     }
 
@@ -120,7 +124,7 @@ impl MapBounds {
             )
         };
         Self {
-            bbox: LonLatBbox::new(lon_min, lon_max, lat_min, lat_max),
+            bbox: LonLatBbox { lon_min, lon_max, lat_min, lat_max },
         }
     }
 
@@ -187,7 +191,7 @@ mod tests {
     fn to_bake_bounds_carries_extents_and_step() {
         // Extent 120 ≪ 1024 * 7.5, so the step is honoured as-is.
         let b = MapBounds {
-            bbox: LonLatBbox::new(-10.0, 110.0, 5.0, 95.0),
+            bbox: LonLatBbox { lon_min: -10.0, lon_max: 110.0, lat_min: 5.0, lat_max: 95.0 },
         };
         let bb = b.to_bake_bounds(7.5);
         assert_eq!(bb.bbox.lon_min, -10.0);
@@ -204,7 +208,7 @@ mod tests {
         // would be 8M cells per side; clamp must grow the step so neither
         // axis exceeds MAX_BAKE_CELLS_PER_SIDE = 1024.
         let b = MapBounds {
-            bbox: LonLatBbox::new(-2.0e7, 2.0e7, -1.0e7, 1.0e7),
+            bbox: LonLatBbox { lon_min: -2.0e7, lon_max: 2.0e7, lat_min: -1.0e7, lat_max: 1.0e7 },
         };
         let bb = b.to_bake_bounds(5.0);
         let lon_span = bb.bbox.lon_max - bb.bbox.lon_min;
@@ -226,7 +230,7 @@ mod tests {
         // construction path so a future RouteBounds::new signature change
         // doesn't go unnoticed here.
         let b = MapBounds {
-            bbox: LonLatBbox::new(0.0, 100.0, 0.0, 100.0),
+            bbox: LonLatBbox { lon_min: 0.0, lon_max: 100.0, lat_min: 0.0, lat_max: 100.0 },
         };
         let _rb = b.to_route_bounds((0.0, 0.0), (100.0, 100.0));
     }
@@ -234,7 +238,7 @@ mod tests {
     #[test]
     fn resolve_endpoints_falls_back_to_bbox_corners() {
         let b = MapBounds {
-            bbox: LonLatBbox::new(-5.0, 15.0, 1.0, 9.0),
+            bbox: LonLatBbox { lon_min: -5.0, lon_max: 15.0, lat_min: 1.0, lat_max: 9.0 },
         };
         let (start, end) = b.resolve_endpoints(None, None);
         assert_eq!(start, (-5.0, 1.0));
@@ -244,7 +248,7 @@ mod tests {
     #[test]
     fn resolve_endpoints_honours_user_overrides() {
         let b = MapBounds {
-            bbox: LonLatBbox::new(-5.0, 15.0, 1.0, 9.0),
+            bbox: LonLatBbox { lon_min: -5.0, lon_max: 15.0, lat_min: 1.0, lat_max: 9.0 },
         };
         let (start, end) = b.resolve_endpoints(Some((0.0, 0.0)), Some((10.0, 5.0)));
         assert_eq!(start, (0.0, 0.0));

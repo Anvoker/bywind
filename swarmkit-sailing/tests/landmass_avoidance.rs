@@ -43,7 +43,7 @@ fn route_bounds_for_land_test() -> RouteBounds {
     RouteBounds::new(
         (0.0, 0.0),
         (10.0, 0.0),
-        LonLatBbox::new(-2.0, 12.0, -8.0, 8.0),
+        LonLatBbox { lon_min: -2.0, lon_max: 12.0, lat_min: -8.0, lat_max: 8.0 },
     )
 }
 

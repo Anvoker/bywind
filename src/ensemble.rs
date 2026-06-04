@@ -389,7 +389,7 @@ mod tests {
             vec!["gec00".to_owned(), "gep01".to_owned()],
         );
         let bounds = BakeBounds {
-            bbox: LonLatBbox::new(0.0, 1.0, 0.0, 1.0),
+            bbox: LonLatBbox { lon_min: 0.0, lon_max: 1.0, lat_min: 0.0, lat_max: 1.0 },
             step: 0.5,
             coord_scale: 1.0,
         };
@@ -410,7 +410,7 @@ mod tests {
             vec!["gec00".to_owned(), "gep01".to_owned()],
         );
         let bounds = BakeBounds {
-            bbox: LonLatBbox::new(0.0, 1.0, 0.0, 1.0),
+            bbox: LonLatBbox { lon_min: 0.0, lon_max: 1.0, lat_min: 0.0, lat_max: 1.0 },
             step: 1.0,
             coord_scale: 1.0,
         };
@@ -436,7 +436,7 @@ mod tests {
             vec!["gec00".to_owned(), "gep01".to_owned(), "gep02".to_owned()],
         );
         let bounds = BakeBounds {
-            bbox: LonLatBbox::new(0.0, 1.0, 0.0, 1.0),
+            bbox: LonLatBbox { lon_min: 0.0, lon_max: 1.0, lat_min: 0.0, lat_max: 1.0 },
             step: 0.5,
             coord_scale: 1.0,
         };

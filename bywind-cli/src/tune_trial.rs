@@ -313,12 +313,12 @@ fn map_bounds_from_baked(baked: &BakedWindMap) -> MapBounds {
     let nx_steps = baked.nx().saturating_sub(1) as f64;
     let ny_steps = baked.ny().saturating_sub(1) as f64;
     MapBounds {
-        bbox: LonLatBbox::new(
-            baked.x_min(),
-            baked.x_min() + nx_steps * step,
-            baked.y_min(),
-            baked.y_min() + ny_steps * step,
-        ),
+        bbox: LonLatBbox {
+            lon_min: baked.x_min(),
+            lon_max: baked.x_min() + nx_steps * step,
+            lat_min: baked.y_min(),
+            lat_max: baked.y_min() + ny_steps * step,
+        },
     }
 }
 

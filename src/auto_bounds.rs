@@ -93,14 +93,19 @@ pub fn derive_route_bbox<L: LandmassSource>(
     // Step 5+6: re-wrap lon and produce a `MapBounds`. If the padded
     // span ≥ 360°, use a non-wrap full-globe bbox.
     let derived_bbox = if padded_lon_unwrap_max - padded_lon_unwrap_min >= 360.0 {
-        LonLatBbox::new(-180.0, 180.0, padded_lat_min, padded_lat_max)
+        LonLatBbox {
+            lon_min: -180.0,
+            lon_max: 180.0,
+            lat_min: padded_lat_min,
+            lat_max: padded_lat_max,
+        }
     } else {
-        LonLatBbox::new(
-            wrap_lon_deg(padded_lon_unwrap_min),
-            wrap_lon_deg(padded_lon_unwrap_max),
-            padded_lat_min,
-            padded_lat_max,
-        )
+        LonLatBbox {
+            lon_min: wrap_lon_deg(padded_lon_unwrap_min),
+            lon_max: wrap_lon_deg(padded_lon_unwrap_max),
+            lat_min: padded_lat_min,
+            lat_max: padded_lat_max,
+        }
     };
     let derived = MapBounds { bbox: derived_bbox };
 
@@ -126,12 +131,12 @@ fn global_probe_bounds(origin: LatLon, destination: LatLon) -> RouteBounds {
     RouteBounds::new(
         origin,
         destination,
-        LonLatBbox::new(
-            -180.0,
-            180.0,
-            -POLE_LATITUDE_LIMIT_DEG,
-            POLE_LATITUDE_LIMIT_DEG,
-        ),
+        LonLatBbox {
+            lon_min: -180.0,
+            lon_max: 180.0,
+            lat_min: -POLE_LATITUDE_LIMIT_DEG,
+            lat_max: POLE_LATITUDE_LIMIT_DEG,
+        },
     )
 }
 
@@ -271,7 +276,12 @@ mod tests {
         // Open-ocean route, clamped to a tight rectangle: result must
         // sit inside the clamp.
         let clamp = MapBounds {
-            bbox: LonLatBbox::new(-100.0, -40.0, -10.0, 10.0),
+            bbox: LonLatBbox {
+                lon_min: -100.0,
+                lon_max: -40.0,
+                lat_min: -10.0,
+                lat_max: 10.0,
+            },
         };
         let bbox = derive_route_bbox((-30.0, 0.0), (-150.0, 0.0), landmass_grid(), Some(clamp))
             .expect("derived")
@@ -296,7 +306,12 @@ mod tests {
         // The CLI parses `lon_min,lat_min,lon_max,lat_max`; check the
         // formatted form matches that expected order.
         let bounds = MapBounds {
-            bbox: LonLatBbox::new(-75.0, -10.0, 25.0, 60.0),
+            bbox: LonLatBbox {
+                lon_min: -75.0,
+                lon_max: -10.0,
+                lat_min: 25.0,
+                lat_max: 60.0,
+            },
         };
         let s = format_bbox_flag(bounds);
         assert_eq!(s, "-75.0000,25.0000,-10.0000,60.0000");

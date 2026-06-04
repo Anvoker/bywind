@@ -37,13 +37,13 @@ const SCENARIOS: &[Scenario] = &[
         name: "Sinai (Med -> Arabian Sea, around Africa)",
         origin: LatLon::new(12.894705772399902, 36.113094329833984),
         destination: LatLon::new(55.21006393432617, 10.023117065429688),
-        bbox: LonLatBbox::new(-32.35, 69.85, -49.85, 52.35),
+        bbox: LonLatBbox { lon_min: -32.35, lon_max: 69.85, lat_min: -49.85, lat_max: 52.35 },
     },
     Scenario {
         name: "Black Sea -> Bay of Biscay",
         origin: LatLon::new(30.451622009277344, 42.87483596801758),
         destination: LatLon::new(-3.651212692260742, 45.15494155883789),
-        bbox: LonLatBbox::new(-32.35, 69.85, -49.85, 52.35),
+        bbox: LonLatBbox { lon_min: -32.35, lon_max: 69.85, lat_min: -49.85, lat_max: 52.35 },
     },
 ];
 
@@ -140,7 +140,7 @@ fn main() {
     println!();
 
     println!("## Bulk `signed_distance_m` queries ({QUERY_COUNT} random points in Med bbox)\n");
-    let med = LonLatBbox::new(-10.0, 40.0, 30.0, 46.0);
+    let med = LonLatBbox { lon_min: -10.0, lon_max: 40.0, lat_min: 30.0, lat_max: 46.0 };
     println!("| resolution | total time | per-query (ns) |");
     println!("|---|---|---|");
     for &res in RESOLUTIONS_DEG {

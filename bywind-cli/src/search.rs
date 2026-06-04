@@ -316,7 +316,7 @@ impl WindSource {
             // also fails `is_non_degenerate` — we'd produce a clearer
             // error there.)
             Self::Fresh(map) => MapBounds::from_wind_map(map).unwrap_or(MapBounds {
-                bbox: LonLatBbox::new(0.0, 0.0, 0.0, 0.0),
+                bbox: LonLatBbox { lon_min: 0.0, lon_max: 0.0, lat_min: 0.0, lat_max: 0.0 },
             }),
             Self::Cached(baked) => map_bounds_from_baked(baked),
             // For the ensemble path, every member shares the same
@@ -327,7 +327,7 @@ impl WindSource {
                 .first()
                 .and_then(MapBounds::from_wind_map)
                 .unwrap_or(MapBounds {
-                    bbox: LonLatBbox::new(0.0, 0.0, 0.0, 0.0),
+                    bbox: LonLatBbox { lon_min: 0.0, lon_max: 0.0, lat_min: 0.0, lat_max: 0.0 },
                 }),
         }
     }
@@ -435,12 +435,12 @@ fn map_bounds_from_baked(baked: &BakedWindMap) -> MapBounds {
     let nx_steps = baked.nx().saturating_sub(1) as f64;
     let ny_steps = baked.ny().saturating_sub(1) as f64;
     MapBounds {
-        bbox: LonLatBbox::new(
-            baked.x_min(),
-            baked.x_min() + nx_steps * step,
-            baked.y_min(),
-            baked.y_min() + ny_steps * step,
-        ),
+        bbox: LonLatBbox {
+            lon_min: baked.x_min(),
+            lon_max: baked.x_min() + nx_steps * step,
+            lat_min: baked.y_min(),
+            lat_max: baked.y_min() + ny_steps * step,
+        },
     }
 }
 

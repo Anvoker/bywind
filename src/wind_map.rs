@@ -1166,7 +1166,12 @@ mod crossfade_tests {
         // paths drive the same crossfade math; this guards against
         // future drift between the two implementations.
         let m = fixture();
-        let bbox = swarmkit_sailing::spherical::LonLatBbox::new(0.0, 0.0, 0.0, 0.0);
+        let bbox = swarmkit_sailing::spherical::LonLatBbox {
+            lon_min: 0.0,
+            lon_max: 0.0,
+            lat_min: 0.0,
+            lat_max: 0.0,
+        };
         let baked = m.bake(BakeBounds {
             bbox,
             step: 0.25,

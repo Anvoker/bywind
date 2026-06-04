@@ -437,16 +437,16 @@ pub struct LonLatBbox {
     pub lat_max: f64,
 }
 
-impl LonLatBbox {
-    pub const fn new(lon_min: f64, lon_max: f64, lat_min: f64, lat_max: f64) -> Self {
-        Self {
-            lon_min,
-            lon_max,
-            lat_min,
-            lat_max,
-        }
-    }
+// Construction is intentionally via struct literal — `LonLatBbox { lon_min,
+// lon_max, lat_min, lat_max }` — so the field name appears at the call site
+// next to each value. A positional 4-tuple of `f64`s is a type-checked
+// permutation trap (e.g. lat-first GRIB2 vs. lon-first TOML conventions both
+// live in this codebase); the struct-literal form makes a permutation visible
+// to a reader without relying on argument-order memorization. Don't add a
+// `new(...)` constructor back; the precedent commit aa57635 is what this
+// design choice is protecting against.
 
+impl LonLatBbox {
     /// True iff this bbox crosses the antimeridian.
     pub fn wraps_antimeridian(self) -> bool {
         self.lon_min > self.lon_max
@@ -800,7 +800,7 @@ mod tests {
 
     #[test]
     fn bbox_non_wrap_basic_predicates() {
-        let b = LonLatBbox::new(-10.0, 30.0, -5.0, 5.0);
+        let b = LonLatBbox { lon_min: -10.0, lon_max: 30.0, lat_min: -5.0, lat_max: 5.0 };
         assert!(!b.wraps_antimeridian());
         assert!(b.is_non_degenerate());
         assert_eq!(b.lon_max_unwrapped(), 30.0);
@@ -812,7 +812,7 @@ mod tests {
     fn bbox_wrapping_extent_reaches_across_antimeridian() {
         // Tokyo→SF-style wrap: lon_min = 139, lon_max = -122 covers
         // [139, 180] ∪ [-180, -122]. Total lon span = 99°.
-        let b = LonLatBbox::new(139.0, -122.0, -10.0, 10.0);
+        let b = LonLatBbox { lon_min: 139.0, lon_max: -122.0, lat_min: -10.0, lat_max: 10.0 };
         assert!(b.wraps_antimeridian());
         assert!(b.is_non_degenerate());
         assert!((b.lon_max_unwrapped() - 238.0).abs() < 1e-12);
@@ -822,16 +822,16 @@ mod tests {
     #[test]
     fn bbox_degenerate_collapses_lon_or_lat() {
         // Equal lon edges: zero lon extent, degenerate.
-        let b = LonLatBbox::new(0.0, 0.0, -5.0, 5.0);
+        let b = LonLatBbox { lon_min: 0.0, lon_max: 0.0, lat_min: -5.0, lat_max: 5.0 };
         assert!(!b.is_non_degenerate());
         // Equal lat edges: zero lat extent, degenerate.
-        let b = LonLatBbox::new(-10.0, 10.0, 5.0, 5.0);
+        let b = LonLatBbox { lon_min: -10.0, lon_max: 10.0, lat_min: 5.0, lat_max: 5.0 };
         assert!(!b.is_non_degenerate());
     }
 
     #[test]
     fn bbox_clamp_non_wrap_uses_interval_clamp() {
-        let b = LonLatBbox::new(-10.0, 30.0, -5.0, 5.0);
+        let b = LonLatBbox { lon_min: -10.0, lon_max: 30.0, lat_min: -5.0, lat_max: 5.0 };
         // Inside: pass-through.
         let c = b.clamp(LatLon::new(20.0, 0.0));
         assert!(approx_ll(c, LatLon::new(20.0, 0.0), 1e-12));
@@ -845,7 +845,7 @@ mod tests {
 
     #[test]
     fn bbox_clamp_wrap_passes_through_inside_ranges_and_snaps_outside() {
-        let b = LonLatBbox::new(170.0, -170.0, -10.0, 10.0);
+        let b = LonLatBbox { lon_min: 170.0, lon_max: -170.0, lat_min: -10.0, lat_max: 10.0 };
         // Inside the eastern half of the wrap.
         let c = b.clamp(LatLon::new(178.0, 0.0));
         assert!(approx(c.lon, 178.0, 1e-12));
@@ -864,7 +864,7 @@ mod tests {
         // Even when lat_min is at the pole, clamp must shave back inside
         // POLE_LATITUDE_LIMIT_DEG so tangent-frame conversions stay
         // defined.
-        let b = LonLatBbox::new(-10.0, 10.0, -90.0, 90.0);
+        let b = LonLatBbox { lon_min: -10.0, lon_max: 10.0, lat_min: -90.0, lat_max: 90.0 };
         let c = b.clamp(LatLon::new(0.0, 89.999));
         assert!(c.lat <= POLE_LATITUDE_LIMIT_DEG);
         let c = b.clamp(LatLon::new(0.0, -89.999));

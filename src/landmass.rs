@@ -279,7 +279,7 @@ impl StraitCarveOut {
             lat_min = lat_min.min(lat);
             lat_max = lat_max.max(lat);
         }
-        LonLatBbox::new(lon_min, lon_max, lat_min, lat_max)
+        LonLatBbox { lon_min, lon_max, lat_min, lat_max }
     }
 
     /// [`Self::waypoint_bbox`] expanded uniformly by `padding_deg` on
@@ -287,12 +287,12 @@ impl StraitCarveOut {
     /// clamp before allocating cells.
     fn padded_bbox(&self, padding_deg: f64) -> LonLatBbox {
         let b = self.waypoint_bbox();
-        LonLatBbox::new(
-            b.lon_min - padding_deg,
-            b.lon_max + padding_deg,
-            b.lat_min - padding_deg,
-            b.lat_max + padding_deg,
-        )
+        LonLatBbox {
+            lon_min: b.lon_min - padding_deg,
+            lon_max: b.lon_max + padding_deg,
+            lat_min: b.lat_min - padding_deg,
+            lat_max: b.lat_max + padding_deg,
+        }
     }
 }
 
@@ -1837,12 +1837,12 @@ fn bboxes_overlap(a: LonLatBbox, b: LonLatBbox) -> bool {
 }
 
 fn bbox_union(a: LonLatBbox, b: LonLatBbox) -> LonLatBbox {
-    LonLatBbox::new(
-        a.lon_min.min(b.lon_min),
-        a.lon_max.max(b.lon_max),
-        a.lat_min.min(b.lat_min),
-        a.lat_max.max(b.lat_max),
-    )
+    LonLatBbox {
+        lon_min: a.lon_min.min(b.lon_min),
+        lon_max: a.lon_max.max(b.lon_max),
+        lat_min: a.lat_min.min(b.lat_min),
+        lat_max: a.lat_max.max(b.lat_max),
+    }
 }
 
 // ============================================================================
@@ -1875,18 +1875,18 @@ mod tests {
     fn benchmark_sampler_handles_around_continent_routes() {
         let grid = landmass_grid();
 
-        let bob_to_angola_bbox = LonLatBbox::new(
-            -23.450000000000045,
-            16.450000000000045,
-            -20.317062759399413,
-            57.033261680603026,
-        );
-        let bob_to_arabian_bbox = LonLatBbox::new(
-            -32.94999999999999,
-            73.45000000000005,
-            -51.650000000000006,
-            63.150000000000006,
-        );
+        let bob_to_angola_bbox = LonLatBbox {
+            lon_min: -23.450000000000045,
+            lon_max: 16.450000000000045,
+            lat_min: -20.317062759399413,
+            lat_max: 57.033261680603026,
+        };
+        let bob_to_arabian_bbox = LonLatBbox {
+            lon_min: -32.94999999999999,
+            lon_max: 73.45000000000005,
+            lat_min: -51.650000000000006,
+            lat_max: 63.150000000000006,
+        };
 
         let scenarios: &[(&str, LatLon, LatLon, LonLatBbox)] = &[
             (
@@ -2088,7 +2088,7 @@ mod tests {
         RouteBounds::new(
             origin,
             destination,
-            LonLatBbox::new(-30.0, 30.0, -25.0, 25.0),
+            LonLatBbox { lon_min: -30.0, lon_max: 30.0, lat_min: -25.0, lat_max: 25.0 },
         )
     }
 
@@ -2102,7 +2102,7 @@ mod tests {
         let bounds = RouteBounds::new(
             origin,
             destination,
-            LonLatBbox::new(-180.0, 180.0, -45.0, 45.0),
+            LonLatBbox { lon_min: -180.0, lon_max: 180.0, lat_min: -45.0, lat_max: 45.0 },
         );
         let polyline = grid
             .find_sea_path(origin, destination, &bounds, SeaPathBias::None)
@@ -2155,7 +2155,7 @@ mod tests {
         let bounds = RouteBounds::new(
             origin,
             destination,
-            LonLatBbox::new(-30.0, 30.0, -20.0, 9.0),
+            LonLatBbox { lon_min: -30.0, lon_max: 30.0, lat_min: -20.0, lat_max: 9.0 },
         );
         let polyline = grid
             .find_sea_path(origin, destination, &bounds, SeaPathBias::None)
@@ -2243,7 +2243,7 @@ mod tests {
         let bounds = RouteBounds::new(
             aegean,
             black_sea,
-            LonLatBbox::new(22.0, 35.0, 36.0, 46.0),
+            LonLatBbox { lon_min: 22.0, lon_max: 35.0, lat_min: 36.0, lat_max: 46.0 },
         );
         let path = grid
             .find_sea_path(aegean, black_sea, &bounds, SeaPathBias::None)
@@ -2279,7 +2279,7 @@ mod tests {
         let bounds = RouteBounds::new(
             origin,
             destination,
-            LonLatBbox::new(-32.35, 69.85, -49.85, 52.35),
+            LonLatBbox { lon_min: -32.35, lon_max: 69.85, lat_min: -49.85, lat_max: 52.35 },
         );
         let polyline = grid
             .find_sea_path(origin, destination, &bounds, SeaPathBias::None)
@@ -2337,7 +2337,7 @@ mod tests {
         let bounds = RouteBounds::new(
             atlantic,
             mediterranean,
-            LonLatBbox::new(-10.0, 5.0, 33.0, 40.0),
+            LonLatBbox { lon_min: -10.0, lon_max: 5.0, lat_min: 33.0, lat_max: 40.0 },
         );
         let path = grid
             .find_sea_path(atlantic, mediterranean, &bounds, SeaPathBias::None)
@@ -2474,7 +2474,7 @@ mod tests {
         let bounds = RouteBounds::new(
             origin,
             destination,
-            LonLatBbox::new(-19.55, 42.05, 32.20, 46.45),
+            LonLatBbox { lon_min: -19.55, lon_max: 42.05, lat_min: 32.20, lat_max: 46.45 },
         );
         let polyline = two_tier
             .find_sea_path(origin, destination, &bounds, SeaPathBias::None)
@@ -2511,7 +2511,7 @@ mod tests {
         let bounds = RouteBounds::new(
             red_sea,
             south_china_sea,
-            LonLatBbox::new(30.0, 110.0, -15.0, 30.0),
+            LonLatBbox { lon_min: 30.0, lon_max: 110.0, lat_min: -15.0, lat_max: 30.0 },
         );
         let polyline = grid
             .find_sea_path(red_sea, south_china_sea, &bounds, SeaPathBias::None)
@@ -2545,7 +2545,7 @@ mod tests {
         let bounds = RouteBounds::new(
             origin,
             destination,
-            LonLatBbox::new(-90.0, 90.0, -60.0, 60.0),
+            LonLatBbox { lon_min: -90.0, lon_max: 90.0, lat_min: -60.0, lat_max: 60.0 },
         );
         assert!(
             grid.find_sea_path(origin, destination, &bounds, SeaPathBias::None)

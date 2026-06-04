@@ -204,14 +204,18 @@ impl BywindApp {
                 return;
             };
             // `EditorState::route_bbox` is `(lon_min, lon_max, lat_min,
-            // lat_max)` per io.rs:286 (the TOML layout convention),
-            // which matches `LonLatBbox::new`'s argument order
-            // exactly. Passing it through verbatim — earlier code
-            // here had the components permuted, which made the
-            // ensemble bake bounds malformed and silently broke the
-            // A* benchmark.
+            // lat_max)` per io.rs:286 (the TOML layout convention).
+            // Naming each field at the construction site makes a
+            // permutation visible to a reader — commit aa57635 fixed
+            // a bug where the tuple components were silently reordered
+            // into a positional `LonLatBbox::new(...)` call.
             MapBounds {
-                bbox: LonLatBbox::new(bbox.0, bbox.1, bbox.2, bbox.3),
+                bbox: LonLatBbox {
+                    lon_min: bbox.0,
+                    lon_max: bbox.1,
+                    lat_min: bbox.2,
+                    lat_max: bbox.3,
+                },
             }
         } else {
             let Some(wind_map) = &self.wind_map else {
@@ -352,7 +356,12 @@ impl BywindApp {
             return;
         }
         let map_bounds = MapBounds {
-            bbox: LonLatBbox::new(route_bbox.0, route_bbox.1, route_bbox.2, route_bbox.3),
+            bbox: LonLatBbox {
+                lon_min: route_bbox.0,
+                lon_max: route_bbox.1,
+                lat_min: route_bbox.2,
+                lat_max: route_bbox.3,
+            },
         };
         let bounds = map_bounds.clamp_to(Some(route_bbox));
         if !bounds.is_non_degenerate() {

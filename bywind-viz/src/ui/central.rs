@@ -609,12 +609,12 @@ impl BywindApp {
         let lon_pad = ((lon_max - lon_min) * 0.15).max(1.0);
         let lat_pad = ((lat_max - lat_min) * 0.15).max(1.0);
         Some(MapBounds {
-            bbox: LonLatBbox::new(
-                lon_min - lon_pad,
-                lon_max + lon_pad,
-                (lat_min - lat_pad).max(-89.99),
-                (lat_max + lat_pad).min(89.99),
-            ),
+            bbox: LonLatBbox {
+                lon_min: lon_min - lon_pad,
+                lon_max: lon_max + lon_pad,
+                lat_min: (lat_min - lat_pad).max(-89.99),
+                lat_max: (lat_max + lat_pad).min(89.99),
+            },
         })
     }
 

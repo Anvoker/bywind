@@ -66,7 +66,12 @@ pub fn route_bounds_for_smoke() -> swarmkit_sailing::RouteBounds {
     swarmkit_sailing::RouteBounds::new(
         (-10.0, 45.0),
         (0.0, 55.0),
-        swarmkit_sailing::spherical::LonLatBbox::new(-12.0, 2.0, 43.0, 57.0),
+        swarmkit_sailing::spherical::LonLatBbox {
+            lon_min: -12.0,
+            lon_max: 2.0,
+            lat_min: 43.0,
+            lat_max: 57.0,
+        },
     )
 }
 
