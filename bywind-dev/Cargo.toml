@@ -6,8 +6,8 @@ edition.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-bywind = { path = "..", version = "0.1" }
-swarmkit-sailing = { path = "../swarmkit-sailing", version = "0.1" }
+bywind = { path = "..", version = "0.2" }
+swarmkit-sailing = { path = "../swarmkit-sailing", version = "0.2" }
 
 [lints]
 workspace = true

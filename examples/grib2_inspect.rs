@@ -52,6 +52,7 @@ fn unit_to_seconds(unit: &Code<Table4_4, u8>, value: u32) -> Option<u32> {
     value.checked_mul(mul)
 }
 
+#[expect(clippy::too_many_lines, reason = "diagnostic example, flat top-to-bottom by design")]
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args()
         .nth(1)
