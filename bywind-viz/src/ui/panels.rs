@@ -114,6 +114,7 @@ impl BywindApp {
         ui.label(format!("Total time: {total_time_str}"));
         ui.label(format!("Total fuel: {total_fuel_str}"));
         ui.label(format!("Total land: {}", format_land_km(total_land_metres)));
+        self.render_wind_horizon_warning(ui, total_time);
         // Bake / Search timings only describe the main search. We
         // don't track per-realization timings (the cohort shares a
         // single bake and the K wallclock is dominated by the loop
@@ -211,6 +212,55 @@ impl BywindApp {
             self.render_ensemble_spread(ui, ens, segment_in_tonnes);
         }
         toggle_summary
+    }
+
+    /// Warn when the route's total duration exceeds the loaded wind's
+    /// data horizon. Past `(nt-1) · t_step`, the time query in
+    /// `BakedWindMap::sample_wind` enters a crossfade tail (frame N-1
+    /// → frame 0) and then loops, so a route longer than the data is
+    /// being evaluated against repeated / synthesized weather rather
+    /// than the actual forecast. Fine for smoke testing the pipeline;
+    /// misleading when judging route quality. No-op when no search
+    /// has run, when the baked map has < 2 frames (no time axis),
+    /// or when the route fits inside the horizon.
+    fn render_wind_horizon_warning(&self, ui: &mut egui::Ui, total_time: f64) {
+        let Some(baked) = self.outputs.baked_wind_map.as_ref() else {
+            return;
+        };
+        if baked.nt() < 2 {
+            return;
+        }
+        let data_end = (baked.nt() - 1) as f64 * baked.t_step_seconds();
+        if total_time <= data_end {
+            return;
+        }
+        let crossfade = baked.crossfade_seconds();
+        let cycle = data_end + crossfade;
+        let loops = if cycle > 0.0 { total_time / cycle } else { 0.0 };
+        // Mustard / amber palette — visible against the default egui
+        // panel fill without being as harsh as the SDF-overlay red.
+        let warn_color = egui::Color32::from_rgb(220, 180, 60);
+        ui.colored_label(
+            warn_color,
+            format!(
+                "(route runs {} past the {} wind horizon — looped ~{loops:.1}×)",
+                format_duration_breakdown(total_time - data_end),
+                format_duration_breakdown(data_end),
+            ),
+        )
+        .on_hover_text(format!(
+            "The loaded wind covers {} of real data; the route runs {}. \
+             Past the data end the search interpolates between frame N-1 \
+             and frame 0 across a {} crossfade, then loops every {}. A \
+             route that exceeds the wind horizon is being evaluated \
+             against repeated / synthesized weather, not actual forecast \
+             data — fine for smoke tests, unreliable for judging route \
+             quality. Fetch a longer-horizon wind dataset to silence this.",
+            format_duration_breakdown(data_end),
+            format_duration_breakdown(total_time),
+            format_duration_breakdown(crossfade),
+            format_duration_breakdown(cycle),
+        ));
     }
 
     /// Counterpart to the Main view's Bench grid, shown on a

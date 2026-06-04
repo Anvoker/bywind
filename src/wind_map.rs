@@ -908,6 +908,13 @@ impl BakedWindMap {
     pub fn t_step_seconds(&self) -> f64 {
         self.t_step_seconds
     }
+    /// Length of the wrap-crossfade window in seconds. Past
+    /// `(nt-1) · t_step_seconds`, queries blend frame N-1 toward
+    /// frame 0 over this window before the cycle repeats. See the
+    /// `crossfade_seconds` doc on the field for the default policy.
+    pub fn crossfade_seconds(&self) -> f64 {
+        self.crossfade_seconds
+    }
 
     fn from_timed_map(map: &TimedWindMap, bounds: BakeBounds) -> Self {
         assert!(bounds.step > 0.0, "BakeBounds::step must be > 0");
