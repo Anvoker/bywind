@@ -7,7 +7,7 @@ use crate::draw::{
 use crate::view::ViewTransform;
 use bywind::{
     BoatConfig, LonLatBbox, MapBounds, TimedWindMap, Topology, WaypointCount,
-    fmt::{format_duration_breakdown, format_fitness_magnitude, format_land_km, format_pso_delta},
+    fmt::{format_delta, format_duration_breakdown, format_fitness_magnitude, format_land_km},
     route_evolution_match,
 };
 

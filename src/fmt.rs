@@ -71,32 +71,34 @@ pub fn format_fitness_magnitude(value: f64) -> String {
     }
 }
 
-/// Format the PSO-vs-benchmark delta as a human-readable phrase like
-/// `"PSO 23.4% better"` / `"PSO 5.1% worse"` / `"PSO equal"` /
-/// `"PSO N/A"`.
+/// Format a comparison between `subject` and `other` from the
+/// subject's perspective, e.g. `"PSO 23.4% better"` /
+/// `"Main 5.1% worse"` / `"PSO equal"` / `"Main N/A"`.
 ///
-/// `larger_is_better` flips the comparison: pass `true` for fitness
-/// (higher is better), `false` for time / fuel / land (lower is better).
-/// Pure ASCII so it renders in any font the egui frontend ends up
-/// loading.
-pub fn format_pso_delta(pso: f64, bench: f64, larger_is_better: bool) -> String {
-    if bench.abs() < 1e-12 {
-        return "PSO N/A".to_owned();
+/// `subject_label` names the side being judged (it's what the
+/// percentage is "about"). `larger_is_better` flips the comparison
+/// for fitness-like fields where higher is better; pass `false` for
+/// time / fuel / land (lower is better).
+///
+/// Pure ASCII so the egui frontend renders it in any loaded font.
+pub fn format_delta(subject: f64, other: f64, larger_is_better: bool, subject_label: &str) -> String {
+    if other.abs() < 1e-12 {
+        return format!("{subject_label} N/A");
     }
-    let diff = pso - bench;
+    let diff = subject - other;
     if diff.abs() < 1e-9 {
-        return "PSO equal".to_owned();
+        return format!("{subject_label} equal");
     }
-    let pct = (diff.abs() / bench.abs()) * 100.0;
-    let pso_better = if larger_is_better {
+    let pct = (diff.abs() / other.abs()) * 100.0;
+    let subject_better = if larger_is_better {
         diff > 0.0
     } else {
         diff < 0.0
     };
-    if pso_better {
-        format!("PSO {pct:.1}% better")
+    if subject_better {
+        format!("{subject_label} {pct:.1}% better")
     } else {
-        format!("PSO {pct:.1}% worse")
+        format!("{subject_label} {pct:.1}% worse")
     }
 }
 
@@ -141,11 +143,24 @@ mod tests {
     }
 
     #[test]
-    fn format_pso_delta_handles_signs_and_edges() {
-        assert_eq!(format_pso_delta(80.0, 100.0, false), "PSO 20.0% better");
-        assert_eq!(format_pso_delta(120.0, 100.0, false), "PSO 20.0% worse");
-        assert_eq!(format_pso_delta(1.2, 1.0, true), "PSO 20.0% better");
-        assert_eq!(format_pso_delta(100.0, 100.0, false), "PSO equal");
-        assert_eq!(format_pso_delta(50.0, 0.0, false), "PSO N/A");
+    fn format_delta_handles_signs_and_edges() {
+        assert_eq!(format_delta(80.0, 100.0, false, "PSO"), "PSO 20.0% better");
+        assert_eq!(format_delta(120.0, 100.0, false, "PSO"), "PSO 20.0% worse");
+        assert_eq!(format_delta(1.2, 1.0, true, "PSO"), "PSO 20.0% better");
+        assert_eq!(format_delta(100.0, 100.0, false, "PSO"), "PSO equal");
+        assert_eq!(format_delta(50.0, 0.0, false, "PSO"), "PSO N/A");
+    }
+
+    /// The same comparison from the *other* perspective: same magnitudes,
+    /// flipped better/worse, configurable subject. This is the shape the
+    /// realization view uses ("Main X% worse" instead of "Realization X%
+    /// better" — both say the same thing about main vs. realization,
+    /// but the parenthetical reads as a qualifier on the main row).
+    #[test]
+    fn format_delta_perspective_flips_with_swapped_args() {
+        // main slower than realization → main is worse from main's POV
+        assert_eq!(format_delta(110.0, 100.0, false, "Main"), "Main 10.0% worse");
+        // …equivalent to: realization faster than main → realization is better
+        assert_eq!(format_delta(100.0, 110.0, false, "Realization"), "Realization 9.1% better");
     }
 }

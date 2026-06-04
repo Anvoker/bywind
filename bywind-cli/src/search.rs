@@ -29,7 +29,7 @@ use bywind::{
     run_search_blocking_with_baked,
 };
 
-use bywind::fmt::{format_duration_breakdown, format_fuel_auto, format_land_km, format_pso_delta};
+use bywind::fmt::{format_delta, format_duration_breakdown, format_fuel_auto, format_land_km};
 
 use crate::display::print_segment_table;
 use crate::error::AppError;
@@ -740,22 +740,22 @@ fn print_summary(
         eprintln!(
             "Bench time: {}  ({})",
             format_duration_breakdown(b.total_time),
-            format_pso_delta(total_time, b.total_time, false),
+            format_delta(total_time, b.total_time, false, "PSO"),
         );
         eprintln!(
             "Bench fuel: {}  ({})",
             format_fuel_auto(b.total_fuel),
-            format_pso_delta(total_fuel, b.total_fuel, false),
+            format_delta(total_fuel, b.total_fuel, false, "PSO"),
         );
         eprintln!(
             "Bench land: {}  ({})",
             format_land_km(b.total_land_metres),
-            format_pso_delta(total_land_metres, b.total_land_metres, false),
+            format_delta(total_land_metres, b.total_land_metres, false, "PSO"),
         );
         eprintln!(
             "Bench fit:  {:.4}  ({})",
             b.fitness,
-            format_pso_delta(saved.best_fit, b.fitness, true),
+            format_delta(saved.best_fit, b.fitness, true, "PSO"),
         );
     } else {
         eprintln!(

@@ -1,8 +1,8 @@
 use super::{
-    BoatConfig, SCALE_MAX, Tool, Topology, WaypointCount, draw_fuel_curve,
+    BoatConfig, SCALE_MAX, Tool, Topology, WaypointCount, draw_fuel_curve, format_delta,
     format_duration_breakdown, format_fitness_magnitude, format_fuel, format_land_km,
-    format_pso_delta, format_scale_value, int_slider_with_steppers, log_slider_with_steppers,
-    min_render_scale, paint_endpoint_highlight, parse_scale_value,
+    format_scale_value, int_slider_with_steppers, log_slider_with_steppers, min_render_scale,
+    paint_endpoint_highlight, parse_scale_value,
 };
 use crate::app::BywindApp;
 use crate::search::SummarySelection;
@@ -172,7 +172,7 @@ impl BywindApp {
                     ui.label(format!("Bench time: {bench_time_str}"));
                     ui.label(format!(
                         "({})",
-                        format_pso_delta(total_time, b.total_time, false),
+                        format_delta(total_time, b.total_time, false, "PSO"),
                     ));
                     ui.end_row();
 
@@ -180,7 +180,7 @@ impl BywindApp {
                     ui.label(format!("Bench fuel: {bench_fuel_str}"));
                     ui.label(format!(
                         "({})",
-                        format_pso_delta(total_fuel, b.total_fuel, false),
+                        format_delta(total_fuel, b.total_fuel, false, "PSO"),
                     ));
                     ui.end_row();
 
@@ -190,7 +190,7 @@ impl BywindApp {
                     ));
                     ui.label(format!(
                         "({})",
-                        format_pso_delta(total_land_metres, b.total_land_metres, false),
+                        format_delta(total_land_metres, b.total_land_metres, false, "PSO"),
                     ));
                     ui.end_row();
 
@@ -201,7 +201,7 @@ impl BywindApp {
                     };
                     ui.label(format!("Bench fit:  {bench_fit_str}"));
                     if let Some(fit) = selected_fitness {
-                        ui.label(format!("({})", format_pso_delta(fit, b.fitness, true)));
+                        ui.label(format!("({})", format_delta(fit, b.fitness, true, "PSO")));
                     } else {
                         ui.label("");
                     }
@@ -267,11 +267,15 @@ impl BywindApp {
     /// realization view. The selected realization's totals are passed
     /// in (already summed by the caller); we sum the main gbest's
     /// totals from `outputs.segment_stats` here and render each row as
-    /// "Main <metric>:  <value>  (Realization X% better/worse)". The
-    /// deltas are oriented so positive % always means the realization
-    /// improved over main on that axis, matching the Main-vs-Bench
-    /// convention. Hidden when the main gbest's metadata isn't around
-    /// — re-load of an old session before any search runs, for example.
+    /// "Main <metric>:  <value>  (Main X% better/worse)". The
+    /// parenthetical reads from *Main's* perspective so it qualifies
+    /// the "Main <metric>:" label on the same row — "Main 1.1% worse"
+    /// means the main gbest's metric is 1.1% worse than the selected
+    /// realization's. Equivalent in content to "Realization X%
+    /// better" but locally consistent with the row label.
+    ///
+    /// Hidden when the main gbest's metadata isn't around — re-load
+    /// of an old session before any search runs, for example.
     fn render_main_comparison(
         &self,
         ui: &mut egui::Ui,
@@ -299,9 +303,11 @@ impl BywindApp {
                     format!("{main_total_time:.1}s")
                 };
                 ui.label(format!("Main time: {main_time_str}"));
+                // Args are `(subject, other, larger_is_better, label)`;
+                // pass main first so the percentage qualifies "Main".
                 ui.label(format!(
                     "({})",
-                    format_pso_delta(realization_total_time, main_total_time, false),
+                    format_delta(main_total_time, realization_total_time, false, "Main"),
                 ));
                 ui.end_row();
 
@@ -309,7 +315,7 @@ impl BywindApp {
                 ui.label(format!("Main fuel: {main_fuel_str}"));
                 ui.label(format!(
                     "({})",
-                    format_pso_delta(realization_total_fuel, main_total_fuel, false),
+                    format_delta(main_total_fuel, realization_total_fuel, false, "Main"),
                 ));
                 ui.end_row();
 
@@ -319,7 +325,7 @@ impl BywindApp {
                 ));
                 ui.label(format!(
                     "({})",
-                    format_pso_delta(realization_total_land, main_total_land, false),
+                    format_delta(main_total_land, realization_total_land, false, "Main"),
                 ));
                 ui.end_row();
 
@@ -331,10 +337,10 @@ impl BywindApp {
                     };
                     ui.label(format!("Main fit:  {main_fit_str}"));
                     if let Some(rf) = realization_fitness {
-                        // `is_fitness=true` flips the delta sign
-                        // (fitness is negated cost — higher better),
-                        // matching the Bench grid's Fit row.
-                        ui.label(format!("({})", format_pso_delta(rf, mf, true)));
+                        // `larger_is_better=true` flips the delta
+                        // sign (fitness is negated cost — higher is
+                        // better), matching the Bench grid's Fit row.
+                        ui.label(format!("({})", format_delta(mf, rf, true, "Main")));
                     } else {
                         ui.label("");
                     }
