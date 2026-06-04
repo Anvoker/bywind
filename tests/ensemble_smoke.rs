@@ -17,7 +17,8 @@
 
 use bywind::{
     BAKE_STEP, BakedEnsembleWindMap, BoatConfig, MapBounds, SearchConfig, SearchResult,
-    SearchWeights, TimedEnsembleWindMap, TimedWindMap, WindInput, run_search_blocking_with_baked,
+    SearchWeights, TimedEnsembleWindMap, TimedWindMap, WindInput, run_realizations,
+    run_search_blocking_with_baked,
 };
 use rand::SeedableRng as _;
 use rand::rngs::SmallRng;
@@ -167,6 +168,68 @@ fn ensemble_spread_time_varies_across_distinct_members() {
         "per-member time_s collapsed to a single value across distinct members — \
          per-member time-reopt likely regressed: times={times:?}",
     );
+}
+
+#[test]
+fn run_realizations_returns_one_run_per_member_with_finite_fitness() {
+    // K=3 distinct synthetic members. `run_realizations` must produce
+    // K independently-converged routes:
+    //  - vector length matches `member_count()` exactly,
+    //  - names round-trip from the source ensemble in stable order,
+    //  - each `fitness` is finite (no NaN / -∞ from infeasible
+    //    realizations),
+    //  - each `route_evolution` ran ≥ 1 iteration,
+    //  - `segment_stats` has `N - 1` entries (one per leg) so the
+    //    viz Summary panel can iterate without bounds checks.
+    let members: Vec<TimedWindMap> = (0..3)
+        .map(|i| synthetic_wind(WIND_SEED_BASE + i + 200))
+        .collect();
+    let bounds = MapBounds::from_wind_map(&members[0]).expect("non-empty");
+    let bake_bounds = bounds.to_bake_bounds(BAKE_STEP);
+    let baked_members: Vec<_> = members.iter().map(|m| m.clone().bake(bake_bounds)).collect();
+    let names: Vec<String> = vec!["gec00".to_owned(), "gep01".to_owned(), "gep02".to_owned()];
+    let ensemble = BakedEnsembleWindMap::from_members(baked_members, names.clone());
+
+    let cfg = small_search_cfg();
+    let route_bounds = bounds.to_route_bounds((2.0, 2.0), (18.0, 18.0));
+    let weights = SearchWeights {
+        time_weight: cfg.time_weight,
+        fuel_weight: cfg.fuel_weight,
+        land_weight: 0.0,
+    };
+    let runs = run_realizations(
+        &ensemble,
+        route_bounds,
+        cfg.waypoint_count,
+        cfg.to_search_settings(),
+        PSO_SEED,
+        BoatConfig::default().to_boat(),
+        weights,
+        bywind::SDF_RESOLUTION_DEG,
+        None,
+    )
+    .expect("smoke inputs produce a feasible route for every member");
+
+    assert_eq!(runs.len(), names.len(), "one run per member");
+    let expected_segments = cfg.waypoint_count.as_usize().saturating_sub(1);
+    for (run, name) in runs.iter().zip(names.iter()) {
+        assert_eq!(&run.name, name, "names round-trip in stable order");
+        assert!(
+            run.fitness.is_finite(),
+            "realization {name} fitness must be finite, got {}",
+            run.fitness,
+        );
+        assert!(
+            run.route_evolution.iter_count() >= 1,
+            "realization {name} produced zero iterations",
+        );
+        assert_eq!(
+            run.segment_stats.len(),
+            expected_segments,
+            "realization {name}: expected {expected_segments} segments, got {}",
+            run.segment_stats.len(),
+        );
+    }
 }
 
 #[test]

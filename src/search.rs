@@ -13,9 +13,10 @@ use swarmkit_sailing::{
 use crate::config::EnsembleMode;
 use crate::ensemble::BakedEnsembleWindMap;
 use crate::landmass::{landmass_grid_at_resolution, landmass_grid_two_tier};
+use crate::metrics::{SegmentMetrics, compute_segment_metrics};
 use crate::route::{BenchmarkRoute, RouteEvolution, WaypointCount, debug_assert_path_no_nans};
-use crate::waypoint_match;
 use crate::wind_map::{BakeBounds, BakedWindMap, TimedWindMap};
+use crate::{route_evolution_match, waypoint_match};
 
 /// Bake-grid cell size in degrees of lon / lat. 0.25° matches typical
 /// GFS resolution; the bake-bounds builder grows this past the
@@ -100,6 +101,120 @@ impl EnsembleSpread {
         let var = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / k as f64;
         (mean, min, max, var.sqrt())
     }
+}
+
+/// One realization run.
+///
+/// An independent PSO search against a single ensemble member treated
+/// as ground truth. The artifact is a gbest route specific to that
+/// realization — distinct from the main search's single converged
+/// gbest aggregated across the whole ensemble.
+///
+/// See [`run_realizations`] for how K of these are produced from a
+/// baked ensemble.
+pub struct RealizationRun {
+    /// Source member's `.wcav` filename stem (e.g. `"gec00"` or
+    /// `"gep07"`).
+    pub name: String,
+    /// Full evolution from this realization's PSO search.
+    pub route_evolution: RouteEvolution,
+    /// Per-segment metrics for the final-iteration gbest of this
+    /// realization's search, computed against the source member's
+    /// baked wind at search-completion time.
+    pub segment_stats: Vec<SegmentMetrics>,
+    /// Final-iteration gbest `best_fit` (negated cost; higher is
+    /// better).
+    pub fitness: f64,
+}
+
+/// Run K independent realization searches against a baked ensemble.
+///
+/// One per member, treated as if its wind were ground truth. Each
+/// iteration uses `base_seed.wrapping_add(k as u64)` as the search
+/// seed so identically-initialised swarms don't collapse near-
+/// identical winds to bit-identical routes.
+///
+/// Sequential rather than rayon-parallel: each inner search is
+/// already internally parallel via rayon's global pool, so nesting
+/// would oversubscribe cores. On K=3 GEFS this is ~3× the wallclock
+/// of a single search; on K=31 (full GEFS) it's ~31×.
+///
+/// First failure short-circuits the whole cohort (returns the error)
+/// so an infeasible-for-one-realization wind doesn't quietly publish
+/// a partial overlay.
+///
+/// # Errors
+/// Forwards the first [`SearchError`] returned by the inner
+/// [`run_search_blocking_with_baked`] call.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "matches the inner search-blocking signature one-for-one; \
+              bundling args would just shuffle them around"
+)]
+pub fn run_realizations(
+    ensemble: &BakedEnsembleWindMap,
+    route_bounds: RouteBounds,
+    waypoint_count: WaypointCount,
+    mut search_settings: SearchSettings,
+    base_seed: u64,
+    ship: Boat,
+    weights: SearchWeights,
+    sdf_resolution_deg: f64,
+    fine_sdf_resolution_deg: Option<f64>,
+) -> Result<Vec<RealizationRun>, SearchError> {
+    let names = ensemble.member_names().to_vec();
+    let mut runs = Vec::with_capacity(names.len());
+    for (k, name) in names.iter().enumerate() {
+        search_settings.seed = Some(base_seed.wrapping_add(k as u64));
+        let member_baked = ensemble.member(k).clone();
+        let result = run_search_blocking_with_baked(
+            WindInput::single(member_baked),
+            route_bounds,
+            waypoint_count,
+            search_settings,
+            ship,
+            weights,
+            sdf_resolution_deg,
+            fine_sdf_resolution_deg,
+        )?;
+        // Pre-compute segment metrics + final fitness against the
+        // realization's wind while we still own the baked grid. The
+        // search returns ownership of `result.baked` and it's about
+        // to be dropped at the end of this iteration; sampling it
+        // here is the only chance to capture per-realization stats
+        // without re-baking later.
+        let (segment_stats, fitness) = route_evolution_match!(
+            &result.route_evolution,
+            |evo| {
+                let frames = evo.frames();
+                let last = frames
+                    .last()
+                    .expect("search returns at least one iteration");
+                let best = last
+                    .iter()
+                    .max_by(|a, b| {
+                        a.best_fit
+                            .partial_cmp(&b.best_fit)
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .expect("each iteration has at least one particle");
+                let stats = compute_segment_metrics(
+                    &result.boat,
+                    &result.baked,
+                    best.best_pos,
+                    route_bounds.step_distance_max,
+                );
+                (stats, best.best_fit)
+            }
+        );
+        runs.push(RealizationRun {
+            name: name.clone(),
+            route_evolution: result.route_evolution,
+            segment_stats,
+            fitness,
+        });
+    }
+    Ok(runs)
 }
 
 /// Failure modes the blocking search entry points can return. Enum

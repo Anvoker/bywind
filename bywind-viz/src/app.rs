@@ -1,14 +1,13 @@
 use std::sync::mpsc::{Receiver, TryRecvError};
 
 use bywind::{
-    BoatConfig, EnsembleMode, GenerateConfig, LonLatBbox, MapBounds, SearchConfig, SearchError,
-    SearchResult, SearchWeights, TimedWindMap, WindInput, compute_segment_metrics,
-    route_evolution_match, run_search_blocking, run_search_blocking_with_baked,
-    run_time_reopt_blocking,
+    BoatConfig, EnsembleMode, GenerateConfig, LonLatBbox, MapBounds, RealizationRun, SearchConfig,
+    SearchError, SearchResult, SearchWeights, TimedWindMap, WindInput, route_evolution_match,
+    run_realizations, run_search_blocking, run_search_blocking_with_baked, run_time_reopt_blocking,
 };
 
 use crate::config::{EditorState, Tool, ViewState};
-use crate::search::{RealizationRun, ReoptMsg, SearchOutputs};
+use crate::search::{ReoptMsg, SearchOutputs};
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -751,30 +750,20 @@ fn run_ensemble_search(
 }
 
 /// Worker-side per-realization cohort. Loads + bakes the ensemble
-/// once, then runs K single-deterministic searches — one per
-/// realization, each with seed `base_seed + k` so identically-
-/// initialised swarms don't collapse near-identical winds to bit-
-/// identical routes.
-///
-/// Sequential rather than rayon-parallel: each inner search is
-/// already internally parallel via rayon's global pool, so nesting
-/// would oversubscribe cores. On a K=3 GEFS smoke this is ~3× the
-/// wallclock of a single search; on K=31 (full GEFS) it's ~31×.
-///
-/// First failure short-circuits the whole cohort (returns the error)
-/// so a wind input that's infeasible for one realization doesn't
-/// quietly publish a partial overlay.
+/// from disk, then delegates the actual K-search loop to
+/// [`bywind::run_realizations`] so the testable logic lives in core.
+/// The `.wcav`-decode failure is converted to a [`SearchError`] here
+/// since the inner function takes an already-baked ensemble.
 #[expect(
     clippy::too_many_arguments,
-    reason = "glue function bridging Run-per-realization button to the inner search; \
-              bundling args would just shuffle them around"
+    reason = "matches the inner search-blocking signature one-for-one"
 )]
 fn run_realization_searches(
     ensemble_path: &std::path::Path,
     bake_bounds: bywind::wind_map::BakeBounds,
     route_bounds: bywind::RouteBounds,
     waypoint_count: bywind::WaypointCount,
-    mut search_settings: bywind::SearchSettings,
+    search_settings: bywind::SearchSettings,
     base_seed: u64,
     ship: bywind::Boat,
     weights: SearchWeights,
@@ -791,58 +780,17 @@ fn run_realization_searches(
         }
     };
     let baked = ensemble.bake(bake_bounds);
-    let names = baked.member_names().to_vec();
-    let mut realization_runs = Vec::with_capacity(names.len());
-    for (k, name) in names.iter().enumerate() {
-        search_settings.seed = Some(base_seed.wrapping_add(k as u64));
-        let member_baked = baked.member(k).clone();
-        let result = run_search_blocking_with_baked(
-            WindInput::single(member_baked),
-            route_bounds,
-            waypoint_count,
-            search_settings,
-            ship,
-            weights,
-            sdf_resolution_deg,
-            fine_sdf_resolution_deg,
-        )?;
-        // Pre-bake the per-realization segment metrics + final fitness
-        // so the Summary dropdown can switch to this realization
-        // without re-computing — and so we don't have to store the
-        // per-realization `BakedWindMap` in `outputs` to re-bake later.
-        // `result.baked` is this realization's baked wind (the search
-        // returned ownership); it's about to be dropped, so this is
-        // the only chance to sample it.
-        let (segment_stats, fitness) =
-            route_evolution_match!(&result.route_evolution, |evo| {
-                let frames = evo.frames();
-                let last = frames
-                    .last()
-                    .expect("search returns at least one iteration");
-                let best = last
-                    .iter()
-                    .max_by(|a, b| {
-                        a.best_fit
-                            .partial_cmp(&b.best_fit)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    })
-                    .expect("each iteration has at least one particle");
-                let stats = compute_segment_metrics(
-                    &result.boat,
-                    &result.baked,
-                    best.best_pos,
-                    route_bounds.step_distance_max,
-                );
-                (stats, best.best_fit)
-            });
-        realization_runs.push(RealizationRun {
-            name: name.clone(),
-            route_evolution: result.route_evolution,
-            segment_stats,
-            fitness,
-        });
-    }
-    Ok(realization_runs)
+    run_realizations(
+        &baked,
+        route_bounds,
+        waypoint_count,
+        search_settings,
+        base_seed,
+        ship,
+        weights,
+        sdf_resolution_deg,
+        fine_sdf_resolution_deg,
+    )
 }
 
 #[cfg(test)]

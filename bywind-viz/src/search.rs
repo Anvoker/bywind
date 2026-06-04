@@ -4,7 +4,7 @@
 //! mutate; this module owns only the value-side types those adapters
 //! produce.
 
-use bywind::{BakedWindMap, BenchmarkRoute, EnsembleSpread, RouteEvolution, SegmentMetrics};
+use bywind::{BakedWindMap, BenchmarkRoute, EnsembleSpread, RealizationRun, RouteEvolution, SegmentMetrics};
 use swarmkit_sailing::{Boat, RouteBounds};
 
 /// Message sent from the time-reoptimization worker thread back to the UI on
@@ -104,36 +104,6 @@ pub(crate) struct SearchOutputs {
     /// search starts; not persisted (session-local state).
     #[serde(skip)]
     pub(crate) last_search_seed: Option<u64>,
-}
-
-/// One ensemble member's independent PSO result, viewed as a separate
-/// weather realization. Produced by the "Run per realization" button —
-/// a separate dispatch from the main Run Search that runs K
-/// single-deterministic searches against each member, so the user can
-/// see *what alternate routes look like* under each realization (not
-/// just how the converged gbest scores against them).
-pub(crate) struct RealizationRun {
-    /// `.wcav` filename stem of the source member (e.g. `"gec00"`,
-    /// `"gep08"`). Used to label the overlay legend and the summary
-    /// dropdown.
-    pub(crate) name: String,
-    /// Full evolution for the per-realization search. We keep the
-    /// whole evolution rather than just the final path so the
-    /// iteration scrubber in the main UI could (later) animate the
-    /// realization cohort alongside the gbest if we want to; today the
-    /// draw layer reads only the final iteration.
-    pub(crate) route_evolution: RouteEvolution,
-    /// Per-segment metrics for the final-iteration gbest of this
-    /// realization's search, computed against the source member's
-    /// baked wind at search-completion time. Pre-baked here (rather
-    /// than at display time) so switching the summary dropdown to this
-    /// realization is a lookup, not a re-bake — and so we don't have
-    /// to store K extra baked wind maps in `outputs`.
-    pub(crate) segment_stats: Vec<SegmentMetrics>,
-    /// `best_fit` of the final-iteration gbest particle. Negated cost;
-    /// higher is better. Used by the Summary panel when this
-    /// realization is the selected view source.
-    pub(crate) fitness: f64,
 }
 
 /// Which route the right-side stats panel renders.
