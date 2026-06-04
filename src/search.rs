@@ -190,30 +190,27 @@ pub fn run_realizations(
         // to be dropped at the end of this iteration; sampling it
         // here is the only chance to capture per-realization stats
         // without re-baking later.
-        let (segment_stats, fitness) = route_evolution_match!(
-            &result.route_evolution,
-            |evo| {
-                let frames = evo.frames();
-                let last = frames
-                    .last()
-                    .expect("search returns at least one iteration");
-                let best = last
-                    .iter()
-                    .max_by(|a, b| {
-                        a.best_fit
-                            .partial_cmp(&b.best_fit)
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    })
-                    .expect("each iteration has at least one particle");
-                let stats = compute_segment_metrics(
-                    &result.boat,
-                    &result.baked,
-                    best.best_pos,
-                    route_bounds.step_distance_max,
-                );
-                (stats, best.best_fit)
-            }
-        );
+        let (segment_stats, fitness) = route_evolution_match!(&result.route_evolution, |evo| {
+            let frames = evo.frames();
+            let last = frames
+                .last()
+                .expect("search returns at least one iteration");
+            let best = last
+                .iter()
+                .max_by(|a, b| {
+                    a.best_fit
+                        .partial_cmp(&b.best_fit)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .expect("each iteration has at least one particle");
+            let stats = compute_segment_metrics(
+                &result.boat,
+                &result.baked,
+                best.best_pos,
+                route_bounds.step_distance_max,
+            );
+            (stats, best.best_fit)
+        });
         runs.push(RealizationRun {
             name: name.clone(),
             route_evolution: result.route_evolution,
@@ -779,150 +776,150 @@ fn run_search_inner_ensemble<LS: LandmassSource>(
 ) -> Result<SearchResult, SearchError> {
     let (route_evolution, boat, benchmark, best_fit, ensemble_spread) =
         waypoint_match!(waypoint_count, N, wrap, {
-        let ensemble_fit_calc = EnsembleSailboatFitCalc::<N, _, _, _> {
-            time_weight: weights.time_weight,
-            fuel_weight: weights.fuel_weight,
-            land_weight: weights.land_weight,
-            departure_time: 0.0,
-            step_distance_max: route_bounds.step_distance_max,
-            ship: &ship,
-            wind_ensemble: &ensemble,
-            landmass: land,
-            robust_objective: RobustObjective::Mean,
-        };
-        // Benchmark uses single-wind fit calc against the mean — a
-        // "mean-wind reference" the user can read alongside the
-        // ensemble PSO result. Compute it first so the UI can paint
-        // the dashed bench overlay before the K-fold PSO begins;
-        // K-fold can take meaningful wallclock at K=31, and showing
-        // the bench up-front lets the user see the search is alive.
-        progress(SearchProgressEvent::Phase(SearchPhase::Benchmark));
-        let bench_fit_calc = SailboatFitCalc::<N, _, _, _> {
-            time_weight: weights.time_weight,
-            fuel_weight: weights.fuel_weight,
-            land_weight: weights.land_weight,
-            departure_time: 0.0,
-            step_distance_max: route_bounds.step_distance_max,
-            ship: &ship,
-            wind_source: &mean,
-            landmass: land,
-        };
-        let benchmark = compute_benchmark::<N, _, _>(
-            &ship,
-            &mean,
-            land,
-            route_bounds,
-            &bench_fit_calc,
-            search_settings,
-        );
-        if let Some(b) = &benchmark {
-            progress(SearchProgressEvent::BenchmarkReady(b.clone()));
-        }
-        // PSO uses ensemble K-fold; baselines / boundary repulsion
-        // query the mean wind (single representative). The init code
-        // only needs `WindSource::sample_wind`, not per-member
-        // fitness — using the mean here keeps the baselines stable.
-        progress(SearchProgressEvent::Phase(SearchPhase::RunningPso));
-        let total_iters = search_settings.max_iteration_space;
-        let mut on_iter = |idx: usize, snapshot: &swarmkit::Best<Path<N>>| {
-            progress(SearchProgressEvent::Iteration {
-                iter_idx: idx,
-                total_iters,
-                gbest_xs: snapshot.best_pos.xy.0.0.to_vec(),
-                gbest_ys: snapshot.best_pos.xy.1.0.to_vec(),
-                gbest_ts: snapshot.best_pos.t.0.0.to_vec(),
-                best_fit: snapshot.best_fit,
-            });
-        };
-        let (gbest, evolution) = search_with_progress::<N, _, _, _, _>(
-            &ship,
-            &mean,
-            land,
-            route_bounds,
-            &ensemble_fit_calc,
-            search_settings,
-            &mut on_iter,
-        );
-        if cfg!(debug_assertions) {
-            assert!(!gbest.best_fit.is_nan(), "NaN in gbest: best_fit");
-            debug_assert_path_no_nans(&gbest.best_pos, "gbest.best_pos");
-            for (iter_idx, particles) in evolution.frames().iter().enumerate() {
-                for (p_idx, particle) in particles.iter().enumerate() {
-                    assert!(
-                        !particle.best_fit.is_nan(),
-                        "NaN in evolution[{iter_idx}][{p_idx}]: best_fit",
-                    );
-                    debug_assert_path_no_nans(
-                        &particle.best_pos,
-                        &format!("evolution[{iter_idx}][{p_idx}].best_pos"),
-                    );
+            let ensemble_fit_calc = EnsembleSailboatFitCalc::<N, _, _, _> {
+                time_weight: weights.time_weight,
+                fuel_weight: weights.fuel_weight,
+                land_weight: weights.land_weight,
+                departure_time: 0.0,
+                step_distance_max: route_bounds.step_distance_max,
+                ship: &ship,
+                wind_ensemble: &ensemble,
+                landmass: land,
+                robust_objective: RobustObjective::Mean,
+            };
+            // Benchmark uses single-wind fit calc against the mean — a
+            // "mean-wind reference" the user can read alongside the
+            // ensemble PSO result. Compute it first so the UI can paint
+            // the dashed bench overlay before the K-fold PSO begins;
+            // K-fold can take meaningful wallclock at K=31, and showing
+            // the bench up-front lets the user see the search is alive.
+            progress(SearchProgressEvent::Phase(SearchPhase::Benchmark));
+            let bench_fit_calc = SailboatFitCalc::<N, _, _, _> {
+                time_weight: weights.time_weight,
+                fuel_weight: weights.fuel_weight,
+                land_weight: weights.land_weight,
+                departure_time: 0.0,
+                step_distance_max: route_bounds.step_distance_max,
+                ship: &ship,
+                wind_source: &mean,
+                landmass: land,
+            };
+            let benchmark = compute_benchmark::<N, _, _>(
+                &ship,
+                &mean,
+                land,
+                route_bounds,
+                &bench_fit_calc,
+                search_settings,
+            );
+            if let Some(b) = &benchmark {
+                progress(SearchProgressEvent::BenchmarkReady(b.clone()));
+            }
+            // PSO uses ensemble K-fold; baselines / boundary repulsion
+            // query the mean wind (single representative). The init code
+            // only needs `WindSource::sample_wind`, not per-member
+            // fitness — using the mean here keeps the baselines stable.
+            progress(SearchProgressEvent::Phase(SearchPhase::RunningPso));
+            let total_iters = search_settings.max_iteration_space;
+            let mut on_iter = |idx: usize, snapshot: &swarmkit::Best<Path<N>>| {
+                progress(SearchProgressEvent::Iteration {
+                    iter_idx: idx,
+                    total_iters,
+                    gbest_xs: snapshot.best_pos.xy.0.0.to_vec(),
+                    gbest_ys: snapshot.best_pos.xy.1.0.to_vec(),
+                    gbest_ts: snapshot.best_pos.t.0.0.to_vec(),
+                    best_fit: snapshot.best_fit,
+                });
+            };
+            let (gbest, evolution) = search_with_progress::<N, _, _, _, _>(
+                &ship,
+                &mean,
+                land,
+                route_bounds,
+                &ensemble_fit_calc,
+                search_settings,
+                &mut on_iter,
+            );
+            if cfg!(debug_assertions) {
+                assert!(!gbest.best_fit.is_nan(), "NaN in gbest: best_fit");
+                debug_assert_path_no_nans(&gbest.best_pos, "gbest.best_pos");
+                for (iter_idx, particles) in evolution.frames().iter().enumerate() {
+                    for (p_idx, particle) in particles.iter().enumerate() {
+                        assert!(
+                            !particle.best_fit.is_nan(),
+                            "NaN in evolution[{iter_idx}][{p_idx}]: best_fit",
+                        );
+                        debug_assert_path_no_nans(
+                            &particle.best_pos,
+                            &format!("evolution[{iter_idx}][{p_idx}].best_pos"),
+                        );
+                    }
                 }
             }
-        }
-        // Per-member spread of the converged gbest path's metrics: hold
-        // the spatial geometry `xy` fixed and time-reopt `t` against
-        // each member's wind, then walk the reopt'd path for `(time,
-        // fuel)`.
-        // Without per-member time-reopt the time axis is constant —
-        // `walk_segments_against_wind` integrates segment durations
-        // from `path.t`, not the wind, so a fixed-path replay gives
-        // every member the same `time_s = sum(gbest.t)`. Land penalty
-        // is wind-independent — compute once and replicate.
-        let gbest_pos = gbest.best_pos;
-        let land_m: f64 = (0..N - 1)
-            .map(|i| {
-                let a = gbest_pos.lat_lon(i);
-                let b = gbest_pos.lat_lon(i + 1);
-                get_segment_land_metres(land, a, b, route_bounds.step_distance_max)
-            })
-            .sum();
-        let per_member: Vec<MemberMetrics> = (0..ensemble.member_count())
-            .map(|k| {
-                let member = ensemble.member(k);
-                let member_fit_calc = SailboatFitCalc::<N, _, _, _> {
-                    time_weight: weights.time_weight,
-                    fuel_weight: weights.fuel_weight,
-                    land_weight: weights.land_weight,
-                    departure_time: 0.0,
-                    step_distance_max: route_bounds.step_distance_max,
-                    ship: &ship,
-                    wind_source: member,
-                    landmass: land,
-                };
-                let reopt_path = reoptimize_times(&member_fit_calc, search_settings, gbest_pos);
-                let (t, f) = walk_segments_against_wind(
-                    &ship,
-                    member,
-                    reopt_path,
-                    0.0,
-                    route_bounds.step_distance_max,
-                );
-                let fitness = weighted_fitness(
-                    t,
-                    f,
-                    land_m,
-                    weights.time_weight,
-                    weights.fuel_weight,
-                    weights.land_weight,
-                );
-                MemberMetrics {
-                    name: ensemble.member_names()[k].clone(),
-                    time_s: t,
-                    fuel_kg: f,
-                    land_m,
-                    fitness,
-                }
-            })
-            .collect();
-        let ensemble_spread = EnsembleSpread { per_member };
-        (
-            wrap(evolution),
-            ship,
-            benchmark,
-            gbest.best_fit,
-            ensemble_spread,
-        )
-    });
+            // Per-member spread of the converged gbest path's metrics: hold
+            // the spatial geometry `xy` fixed and time-reopt `t` against
+            // each member's wind, then walk the reopt'd path for `(time,
+            // fuel)`.
+            // Without per-member time-reopt the time axis is constant —
+            // `walk_segments_against_wind` integrates segment durations
+            // from `path.t`, not the wind, so a fixed-path replay gives
+            // every member the same `time_s = sum(gbest.t)`. Land penalty
+            // is wind-independent — compute once and replicate.
+            let gbest_pos = gbest.best_pos;
+            let land_m: f64 = (0..N - 1)
+                .map(|i| {
+                    let a = gbest_pos.lat_lon(i);
+                    let b = gbest_pos.lat_lon(i + 1);
+                    get_segment_land_metres(land, a, b, route_bounds.step_distance_max)
+                })
+                .sum();
+            let per_member: Vec<MemberMetrics> = (0..ensemble.member_count())
+                .map(|k| {
+                    let member = ensemble.member(k);
+                    let member_fit_calc = SailboatFitCalc::<N, _, _, _> {
+                        time_weight: weights.time_weight,
+                        fuel_weight: weights.fuel_weight,
+                        land_weight: weights.land_weight,
+                        departure_time: 0.0,
+                        step_distance_max: route_bounds.step_distance_max,
+                        ship: &ship,
+                        wind_source: member,
+                        landmass: land,
+                    };
+                    let reopt_path = reoptimize_times(&member_fit_calc, search_settings, gbest_pos);
+                    let (t, f) = walk_segments_against_wind(
+                        &ship,
+                        member,
+                        reopt_path,
+                        0.0,
+                        route_bounds.step_distance_max,
+                    );
+                    let fitness = weighted_fitness(
+                        t,
+                        f,
+                        land_m,
+                        weights.time_weight,
+                        weights.fuel_weight,
+                        weights.land_weight,
+                    );
+                    MemberMetrics {
+                        name: ensemble.member_names()[k].clone(),
+                        time_s: t,
+                        fuel_kg: f,
+                        land_m,
+                        fitness,
+                    }
+                })
+                .collect();
+            let ensemble_spread = EnsembleSpread { per_member };
+            (
+                wrap(evolution),
+                ship,
+                benchmark,
+                gbest.best_fit,
+                ensemble_spread,
+            )
+        });
     if !best_fit.is_finite() {
         return Err(SearchError::NoFeasibleRoute { best_fit });
     }
@@ -959,11 +956,27 @@ pub fn run_time_reopt_blocking<const N: usize>(
     match fine_sdf_resolution_deg {
         None => {
             let land = landmass_grid_at_resolution(sdf_resolution_deg);
-            run_time_reopt_inner(baked, route_bounds, settings, ship, fixed_path, weights, land)
+            run_time_reopt_inner(
+                baked,
+                route_bounds,
+                settings,
+                ship,
+                fixed_path,
+                weights,
+                land,
+            )
         }
         Some(fine) => {
             let land = landmass_grid_two_tier(sdf_resolution_deg, fine);
-            run_time_reopt_inner(baked, route_bounds, settings, ship, fixed_path, weights, land)
+            run_time_reopt_inner(
+                baked,
+                route_bounds,
+                settings,
+                ship,
+                fixed_path,
+                weights,
+                land,
+            )
         }
     }
 }

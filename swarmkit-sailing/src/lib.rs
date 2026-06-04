@@ -239,7 +239,15 @@ pub fn search_with_progress<
     settings: SearchSettings,
     on_iter: &mut dyn FnMut(usize, &Best<Path<N>>),
 ) -> (Best<Path<N>>, Evolution<Path<N>>) {
-    search_inner(boat, wind_source, landmass, route_bounds, fit_calc, settings, on_iter)
+    search_inner(
+        boat,
+        wind_source,
+        landmass,
+        route_bounds,
+        fit_calc,
+        settings,
+        on_iter,
+    )
 }
 
 pub fn search<
@@ -260,7 +268,15 @@ pub fn search<
     // tests) don't need to thread a no-op callback through their
     // call sites. The closure is one machine-code path shared across
     // all callers — no monomorphisation cost for variants.
-    search_inner(boat, wind_source, landmass, route_bounds, fit_calc, settings, &mut |_, _| {})
+    search_inner(
+        boat,
+        wind_source,
+        landmass,
+        route_bounds,
+        fit_calc,
+        settings,
+        &mut |_, _| {},
+    )
 }
 
 fn search_inner<

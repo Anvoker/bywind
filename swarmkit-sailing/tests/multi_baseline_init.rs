@@ -96,7 +96,12 @@ fn make_bounds() -> RouteBounds {
     RouteBounds::new(
         (-15.0, 0.0),
         (15.0, 0.0),
-        LonLatBbox { lon_min: -20.0, lon_max: 20.0, lat_min: -12.0, lat_max: 12.0 },
+        LonLatBbox {
+            lon_min: -20.0,
+            lon_max: 20.0,
+            lat_min: -12.0,
+            lat_max: 12.0,
+        },
     )
 }
 

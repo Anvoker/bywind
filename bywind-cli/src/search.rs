@@ -22,11 +22,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow};
 use bywind::{
-    BakedWindMap, BenchmarkRoute, BoatConfig, EnsembleMode, EnsembleSpread, LonLatBbox,
-    MapBounds, RouteBounds, RouteEvolution, SavedEnsemble, SavedSolution, SearchConfig,
-    SearchResult, SearchWeights, SegmentMetrics, WaypointCount, baked_codec, derive_route_bbox,
-    format_bbox_flag, gbest_segment_metrics, landmass_grid, run_search_blocking,
-    run_search_blocking_with_baked,
+    BakedWindMap, BenchmarkRoute, BoatConfig, EnsembleMode, EnsembleSpread, LonLatBbox, MapBounds,
+    RouteBounds, RouteEvolution, SavedEnsemble, SavedSolution, SearchConfig, SearchResult,
+    SearchWeights, SegmentMetrics, WaypointCount, baked_codec, derive_route_bbox, format_bbox_flag,
+    gbest_segment_metrics, landmass_grid, run_search_blocking, run_search_blocking_with_baked,
 };
 
 use bywind::fmt::{format_delta, format_duration_breakdown, format_fuel_auto, format_land_km};
@@ -141,9 +140,7 @@ fn parse_ensemble_mode(s: &str) -> Result<EnsembleMode, String> {
     match s {
         "full" => Ok(EnsembleMode::Full),
         "fast-mean" => Ok(EnsembleMode::FastMean),
-        other => Err(format!(
-            "expected one of: full, fast-mean (got `{other}`)",
-        )),
+        other => Err(format!("expected one of: full, fast-mean (got `{other}`)",)),
     }
 }
 
@@ -320,7 +317,12 @@ impl WindSource {
             // also fails `is_non_degenerate` — we'd produce a clearer
             // error there.)
             Self::Fresh(map) => MapBounds::from_wind_map(map).unwrap_or(MapBounds {
-                bbox: LonLatBbox { lon_min: 0.0, lon_max: 0.0, lat_min: 0.0, lat_max: 0.0 },
+                bbox: LonLatBbox {
+                    lon_min: 0.0,
+                    lon_max: 0.0,
+                    lat_min: 0.0,
+                    lat_max: 0.0,
+                },
             }),
             Self::Cached(baked) => map_bounds_from_baked(baked),
             // For the ensemble path, every member shares the same
@@ -331,7 +333,12 @@ impl WindSource {
                 .first()
                 .and_then(MapBounds::from_wind_map)
                 .unwrap_or(MapBounds {
-                    bbox: LonLatBbox { lon_min: 0.0, lon_max: 0.0, lat_min: 0.0, lat_max: 0.0 },
+                    bbox: LonLatBbox {
+                        lon_min: 0.0,
+                        lon_max: 0.0,
+                        lat_min: 0.0,
+                        lat_max: 0.0,
+                    },
                 }),
         }
     }
@@ -519,15 +526,10 @@ fn execute_search(
             );
             let bake_start = Instant::now();
             let baked_ensemble = ensemble.bake(bake_bounds);
-            eprintln!(
-                "  baked in {:.2}s",
-                bake_start.elapsed().as_secs_f64(),
-            );
+            eprintln!("  baked in {:.2}s", bake_start.elapsed().as_secs_f64(),);
             let wind_input = match ensemble_mode {
                 EnsembleMode::FastMean => {
-                    eprintln!(
-                        "using fast-mean mode (single-deterministic against ensemble mean)",
-                    );
+                    eprintln!("using fast-mean mode (single-deterministic against ensemble mean)",);
                     bywind::WindInput::ensemble_fast_mean(baked_ensemble)
                 }
                 EnsembleMode::Full => {
@@ -782,14 +784,16 @@ fn print_summary(
         let fuel_sd_s = format_fuel_auto(fuel_sd);
         eprintln!("Fuel: mean={fuel_mean_s}  min={fuel_min_s}  max={fuel_max_s}  sd={fuel_sd_s}");
 
-        let worst = ens
-            .per_member
-            .iter()
-            .min_by(|a, b| a.fitness.partial_cmp(&b.fitness).unwrap_or(std::cmp::Ordering::Equal));
-        let best = ens
-            .per_member
-            .iter()
-            .max_by(|a, b| a.fitness.partial_cmp(&b.fitness).unwrap_or(std::cmp::Ordering::Equal));
+        let worst = ens.per_member.iter().min_by(|a, b| {
+            a.fitness
+                .partial_cmp(&b.fitness)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let best = ens.per_member.iter().max_by(|a, b| {
+            a.fitness
+                .partial_cmp(&b.fitness)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         if let (Some(w), Some(b)) = (worst, best) {
             eprintln!("Worst-case member: {} (fit {:.4})", w.name, w.fitness);
             eprintln!("Best-case member:  {} (fit {:.4})", b.name, b.fitness);

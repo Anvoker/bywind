@@ -405,10 +405,7 @@ pub(crate) fn draw_sdf_overlay(
     // when cells are too small to draw a useful border (saves stroke
     // tessellation and avoids the grid blurring into a wash).
     let draw_grid_lines = cell_w_px >= 6.0 && cell_h_px >= 6.0;
-    let line_stroke = egui::Stroke::new(
-        0.5,
-        egui::Color32::from_rgba_premultiplied(0, 0, 0, 90),
-    );
+    let line_stroke = egui::Stroke::new(0.5, egui::Color32::from_rgba_premultiplied(0, 0, 0, 90));
 
     let mut mesh = egui::Mesh::default();
     for shift in shadow_offsets(world_width_px) {
@@ -463,7 +460,10 @@ pub(crate) fn draw_sdf_overlay(
             for i in i_lo..=i_hi {
                 let x = anchor.x + (i as f32) * cell_w_px + shift;
                 painter.line_segment(
-                    [egui::Pos2::new(x, y_top_line), egui::Pos2::new(x, y_bot_line)],
+                    [
+                        egui::Pos2::new(x, y_top_line),
+                        egui::Pos2::new(x, y_bot_line),
+                    ],
                     line_stroke,
                 );
             }
@@ -533,10 +533,7 @@ fn paint_global_grid_skipping(
     let sea_color = egui::Color32::from_rgba_premultiplied(60, 120, 200, 70);
     let land_color = egui::Color32::from_rgba_premultiplied(200, 80, 60, 70);
     let draw_grid_lines = cell_w_px >= 6.0 && cell_h_px >= 6.0;
-    let line_stroke = egui::Stroke::new(
-        0.5,
-        egui::Color32::from_rgba_premultiplied(0, 0, 0, 90),
-    );
+    let line_stroke = egui::Stroke::new(0.5, egui::Color32::from_rgba_premultiplied(0, 0, 0, 90));
     let mut mesh = egui::Mesh::default();
 
     for shift in shadow_offsets(world_width_px) {
@@ -593,7 +590,10 @@ fn paint_global_grid_skipping(
             for i in i_lo..=i_hi {
                 let x = anchor.x + (i as f32) * cell_w_px + shift;
                 painter.line_segment(
-                    [egui::Pos2::new(x, y_top_line), egui::Pos2::new(x, y_bot_line)],
+                    [
+                        egui::Pos2::new(x, y_top_line),
+                        egui::Pos2::new(x, y_bot_line),
+                    ],
                     line_stroke,
                 );
             }
@@ -647,10 +647,7 @@ fn paint_fine_patch(
     let draw_grid_lines = cell_w_px >= 4.0 && cell_h_px >= 4.0;
     // Slightly stronger stroke than coarse so the fine grid is clearly
     // distinguishable when the two zoom levels meet.
-    let line_stroke = egui::Stroke::new(
-        0.5,
-        egui::Color32::from_rgba_premultiplied(0, 0, 0, 140),
-    );
+    let line_stroke = egui::Stroke::new(0.5, egui::Color32::from_rgba_premultiplied(0, 0, 0, 140));
 
     let mut mesh = egui::Mesh::default();
     for j in j_lo..j_hi {
@@ -684,7 +681,10 @@ fn paint_fine_patch(
         for i in i_lo..=i_hi {
             let x = anchor.x + (i as f32) * cell_w_px;
             painter.line_segment(
-                [egui::Pos2::new(x, y_top_line), egui::Pos2::new(x, y_bot_line)],
+                [
+                    egui::Pos2::new(x, y_top_line),
+                    egui::Pos2::new(x, y_bot_line),
+                ],
                 line_stroke,
             );
         }

@@ -43,7 +43,12 @@ fn scenarios() -> [Scenario; 2] {
             name: "Sinai (Med -> Arabian Sea)",
             start: LatLon::new(12.894705772399902, 36.113094329833984),
             end: LatLon::new(55.21006393432617, 10.023117065429688),
-            bbox: LonLatBbox { lon_min: -32.35, lon_max: 69.85, lat_min: -49.85, lat_max: 52.35 },
+            bbox: LonLatBbox {
+                lon_min: -32.35,
+                lon_max: 69.85,
+                lat_min: -49.85,
+                lat_max: 52.35,
+            },
             waypoints: WaypointCount::N40,
             topology: Topology::VonNeumann,
         },
@@ -51,7 +56,12 @@ fn scenarios() -> [Scenario; 2] {
             name: "Black Sea -> Bay of Biscay",
             start: LatLon::new(30.451622009277344, 42.87483596801758),
             end: LatLon::new(-3.651212692260742, 45.15494155883789),
-            bbox: LonLatBbox { lon_min: -32.35, lon_max: 69.85, lat_min: -49.85, lat_max: 52.35 },
+            bbox: LonLatBbox {
+                lon_min: -32.35,
+                lon_max: 69.85,
+                lat_min: -49.85,
+                lat_max: 52.35,
+            },
             waypoints: WaypointCount::N60,
             topology: Topology::Ring,
         },
@@ -70,11 +80,7 @@ fn boat_cfg() -> BoatConfig {
     }
 }
 
-fn search_cfg_for(
-    scenario: &Scenario,
-    sdf_resolution_deg: f64,
-    seed: u64,
-) -> SearchConfig {
+fn search_cfg_for(scenario: &Scenario, sdf_resolution_deg: f64, seed: u64) -> SearchConfig {
     SearchConfig {
         waypoint_count: scenario.waypoints,
         time_weight: 1.0,
@@ -119,7 +125,10 @@ fn aggregate(samples: &[RunMetrics]) -> (f64, f64, f64, f64) {
         .sum::<f64>()
         / n;
     let stddev = var.sqrt();
-    let min = samples.iter().map(|s| s.fitness).fold(f64::INFINITY, f64::min);
+    let min = samples
+        .iter()
+        .map(|s| s.fitness)
+        .fold(f64::INFINITY, f64::min);
     let max = samples
         .iter()
         .map(|s| s.fitness)
@@ -142,14 +151,19 @@ fn run_scenario(scenario: &Scenario, wind: &TimedWindMap) {
     // Bake covers the route bbox (we trust the user's bbox sits inside the
     // wind extent for these hard-coded scenarios — the GFS map is global).
     let _ = wind_bounds;
-    let bake_bounds = MapBounds { bbox: scenario.bbox }.to_bake_bounds(BAKE_STEP_DEG);
+    let bake_bounds = MapBounds {
+        bbox: scenario.bbox,
+    }
+    .to_bake_bounds(BAKE_STEP_DEG);
     let bake_start = Instant::now();
     let mut baked: Option<BakedWindMap> = Some(wind.bake(bake_bounds));
     println!("  bake: {:.2}s", bake_start.elapsed().as_secs_f64());
 
     let route_bounds = RouteBounds::new(scenario.start, scenario.end, scenario.bbox);
 
-    println!("\n| res | seed | search time | PSO time | PSO fuel | PSO land | PSO fitness | bench fit | PSO better |");
+    println!(
+        "\n| res | seed | search time | PSO time | PSO fuel | PSO land | PSO fitness | bench fit | PSO better |"
+    );
     println!("|---|---|---|---|---|---|---|---|---|");
 
     let mut by_res: Vec<(f64, Vec<RunMetrics>)> = Vec::new();
@@ -210,7 +224,11 @@ fn run_scenario(scenario: &Scenario, wind: &TimedWindMap) {
                 .expect("gbest");
             let bench_fitness = benchmark.as_ref().map(|b| b.fitness);
             let pso_better = bench_fitness.map_or(0.0, |bf| {
-                if bf.abs() < 1e-9 { 0.0 } else { (fitness - bf) / bf.abs() * 100.0 }
+                if bf.abs() < 1e-9 {
+                    0.0
+                } else {
+                    (fitness - bf) / bf.abs() * 100.0
+                }
             });
 
             println!(
@@ -235,7 +253,9 @@ fn run_scenario(scenario: &Scenario, wind: &TimedWindMap) {
     }
 
     println!("\n### Aggregate over {} seeds\n", SEEDS.len());
-    println!("| res | mean fit | stddev | min | max | mean time | mean fuel | mean land | mean search |");
+    println!(
+        "| res | mean fit | stddev | min | max | mean time | mean fuel | mean land | mean search |"
+    );
     println!("|---|---|---|---|---|---|---|---|---|");
     for (res, samples) in &by_res {
         let (mean, stddev, min, max) = aggregate(samples);

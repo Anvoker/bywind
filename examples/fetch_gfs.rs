@@ -58,7 +58,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         3 => 2,
         6 => 1,
         other => {
-            return Err(format!("frames-per-cycle {other} not supported; use 1, 2, 3, or 6").into());
+            return Err(
+                format!("frames-per-cycle {other} not supported; use 1, 2, 3, or 6").into(),
+            );
         }
     };
     let total_hours = i64::from(cycles) * 6;

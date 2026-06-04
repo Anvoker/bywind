@@ -81,7 +81,12 @@ pub fn format_fitness_magnitude(value: f64) -> String {
 /// time / fuel / land (lower is better).
 ///
 /// Pure ASCII so the egui frontend renders it in any loaded font.
-pub fn format_delta(subject: f64, other: f64, larger_is_better: bool, subject_label: &str) -> String {
+pub fn format_delta(
+    subject: f64,
+    other: f64,
+    larger_is_better: bool,
+    subject_label: &str,
+) -> String {
     if other.abs() < 1e-12 {
         return format!("{subject_label} N/A");
     }
@@ -159,8 +164,14 @@ mod tests {
     #[test]
     fn format_delta_perspective_flips_with_swapped_args() {
         // main slower than realization → main is worse from main's POV
-        assert_eq!(format_delta(110.0, 100.0, false, "Main"), "Main 10.0% worse");
+        assert_eq!(
+            format_delta(110.0, 100.0, false, "Main"),
+            "Main 10.0% worse"
+        );
         // …equivalent to: realization faster than main → realization is better
-        assert_eq!(format_delta(100.0, 110.0, false, "Realization"), "Realization 9.1% better");
+        assert_eq!(
+            format_delta(100.0, 110.0, false, "Realization"),
+            "Realization 9.1% better"
+        );
     }
 }

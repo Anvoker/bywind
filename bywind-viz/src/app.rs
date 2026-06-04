@@ -710,8 +710,7 @@ impl eframe::App for BywindApp {
                     // `Realization(k)` would point into a now-empty
                     // cohort, and `Gbest` is the only thing that
                     // makes sense to show right after a new gbest.
-                    self.outputs.summary_selection =
-                        crate::search::SummarySelection::Gbest;
+                    self.outputs.summary_selection = crate::search::SummarySelection::Gbest;
                 }
                 Err(e) => {
                     // Prior outputs stay displayed — discarding them
@@ -745,8 +744,7 @@ impl eframe::App for BywindApp {
                         self.outputs.summary_selection
                         && k >= runs.len()
                     {
-                        self.outputs.summary_selection =
-                            crate::search::SummarySelection::Gbest;
+                        self.outputs.summary_selection = crate::search::SummarySelection::Gbest;
                     }
                     self.outputs.realization_runs = runs;
                 }
@@ -868,9 +866,7 @@ fn run_ensemble_search(
         Ok(e) => e,
         Err(e) => {
             log::error!("ensemble load failed: {e}");
-            return Err(SearchError::NoFeasibleRoute {
-                best_fit: f64::NAN,
-            });
+            return Err(SearchError::NoFeasibleRoute { best_fit: f64::NAN });
         }
     };
     // K member bakes + the `mean()` reduction inside
@@ -921,9 +917,7 @@ fn run_realization_searches(
         Ok(e) => e,
         Err(e) => {
             log::error!("ensemble load failed: {e}");
-            return Err(SearchError::NoFeasibleRoute {
-                best_fit: f64::NAN,
-            });
+            return Err(SearchError::NoFeasibleRoute { best_fit: f64::NAN });
         }
     };
     let baked = ensemble.bake(bake_bounds);

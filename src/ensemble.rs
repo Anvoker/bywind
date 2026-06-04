@@ -75,7 +75,11 @@ impl std::fmt::Display for EnsembleLoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::OpenDir { path, source } => {
-                write!(f, "cannot open ensemble directory {}: {source}", path.display())
+                write!(
+                    f,
+                    "cannot open ensemble directory {}: {source}",
+                    path.display()
+                )
             }
             Self::NoMembers { path } => write!(
                 f,
@@ -194,11 +198,7 @@ impl TimedEnsembleWindMap {
     /// precondition for [`BakedEnsembleWindMap::mean`] and for the
     /// K-fold ensemble fitness loop to make sense.
     pub fn bake(&self, bounds: BakeBounds) -> BakedEnsembleWindMap {
-        let members: Vec<BakedWindMap> = self
-            .members
-            .par_iter()
-            .map(|m| m.bake(bounds))
-            .collect();
+        let members: Vec<BakedWindMap> = self.members.par_iter().map(|m| m.bake(bounds)).collect();
         BakedEnsembleWindMap {
             members,
             member_names: self.member_names.clone(),
@@ -477,7 +477,12 @@ mod tests {
         }
         // The whole point: this combination panicked before the fix.
         let bounds = BakeBounds {
-            bbox: LonLatBbox { lon_min: 0.0, lon_max: 1.0, lat_min: 0.0, lat_max: 1.0 },
+            bbox: LonLatBbox {
+                lon_min: 0.0,
+                lon_max: 1.0,
+                lat_min: 0.0,
+                lat_max: 1.0,
+            },
             step: 1.0,
             coord_scale: 1.0,
         };
@@ -495,7 +500,12 @@ mod tests {
             vec!["gec00".to_owned(), "gep01".to_owned()],
         );
         let bounds = BakeBounds {
-            bbox: LonLatBbox { lon_min: 0.0, lon_max: 1.0, lat_min: 0.0, lat_max: 1.0 },
+            bbox: LonLatBbox {
+                lon_min: 0.0,
+                lon_max: 1.0,
+                lat_min: 0.0,
+                lat_max: 1.0,
+            },
             step: 0.5,
             coord_scale: 1.0,
         };
@@ -516,7 +526,12 @@ mod tests {
             vec!["gec00".to_owned(), "gep01".to_owned()],
         );
         let bounds = BakeBounds {
-            bbox: LonLatBbox { lon_min: 0.0, lon_max: 1.0, lat_min: 0.0, lat_max: 1.0 },
+            bbox: LonLatBbox {
+                lon_min: 0.0,
+                lon_max: 1.0,
+                lat_min: 0.0,
+                lat_max: 1.0,
+            },
             step: 1.0,
             coord_scale: 1.0,
         };
@@ -527,7 +542,14 @@ mod tests {
         // *from-bearing* (meteorological); 270° = west-to-east wind
         // = u=+v, v=0. We don't reach into the conversion details
         // here — we just confirm the dims match the input.
-        assert_eq!((mean.nx(), mean.ny(), mean.nt()), (baked.member(0).nx(), baked.member(0).ny(), baked.member(0).nt()));
+        assert_eq!(
+            (mean.nx(), mean.ny(), mean.nt()),
+            (
+                baked.member(0).nx(),
+                baked.member(0).ny(),
+                baked.member(0).nt()
+            )
+        );
         // And confirm `mean.grid` length matches a member's.
         assert_eq!(mean.grid.len(), baked.member(0).grid.len());
     }
@@ -542,7 +564,12 @@ mod tests {
             vec!["gec00".to_owned(), "gep01".to_owned(), "gep02".to_owned()],
         );
         let bounds = BakeBounds {
-            bbox: LonLatBbox { lon_min: 0.0, lon_max: 1.0, lat_min: 0.0, lat_max: 1.0 },
+            bbox: LonLatBbox {
+                lon_min: 0.0,
+                lon_max: 1.0,
+                lat_min: 0.0,
+                lat_max: 1.0,
+            },
             step: 0.5,
             coord_scale: 1.0,
         };

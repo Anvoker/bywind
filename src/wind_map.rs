@@ -509,9 +509,7 @@ fn bracket_lower(offsets: &[f64], t: f64) -> usize {
     // `partition_point` returns the count of leading entries that
     // satisfy the predicate. With `o <= t` that count is one past the
     // last `o <= t`, so subtract 1 (saturating at 0).
-    offsets
-        .partition_point(|o| *o <= t)
-        .saturating_sub(1)
+    offsets.partition_point(|o| *o <= t).saturating_sub(1)
 }
 
 /// Linear blend of two [`WindSample`]s. Speed is interpolated
@@ -600,12 +598,11 @@ impl TimedWindMap {
     /// not exactly `0.0`, or if the sequence isn't strictly
     /// increasing — every consumer of `frame_offsets` relies on those
     /// invariants.
-    pub fn new_with_offsets(
-        frames: Vec<WindMap>,
-        step_seconds: f32,
-        offsets: Vec<f64>,
-    ) -> Self {
-        assert!(!frames.is_empty(), "TimedWindMap must have at least one frame");
+    pub fn new_with_offsets(frames: Vec<WindMap>, step_seconds: f32, offsets: Vec<f64>) -> Self {
+        assert!(
+            !frames.is_empty(),
+            "TimedWindMap must have at least one frame"
+        );
         assert!(
             step_seconds > 0.0,
             "TimedWindMap step_seconds must be > 0, got {step_seconds}",
@@ -864,10 +861,7 @@ impl TimedWindMap {
     /// actual last-frame timestamp.
     pub fn duration_seconds(&self) -> f32 {
         // `frame_offsets` is non-empty (`new` requires ≥ 1 frame).
-        self.frame_offsets
-            .last()
-            .copied()
-            .unwrap_or(0.0) as f32
+        self.frame_offsets.last().copied().unwrap_or(0.0) as f32
     }
 
     /// Flatten to a list of `(x, y, t_seconds, sample)` rows, ordered frame by frame.

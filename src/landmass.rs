@@ -279,7 +279,12 @@ impl StraitCarveOut {
             lat_min = lat_min.min(lat);
             lat_max = lat_max.max(lat);
         }
-        LonLatBbox { lon_min, lon_max, lat_min, lat_max }
+        LonLatBbox {
+            lon_min,
+            lon_max,
+            lat_min,
+            lat_max,
+        }
     }
 
     /// [`Self::waypoint_bbox`] expanded uniformly by `padding_deg` on
@@ -428,13 +433,7 @@ fn apply_strait_carve_outs(mask: &mut [bool], frame: MaskFrame) {
 /// in both cases. A segment whose endpoints straddle the antimeridian is
 /// not handled — only Bering would need that, and it can be expressed as
 /// two adjacent carve-outs on either side of ±180.
-fn carve_capsule(
-    mask: &mut [bool],
-    frame: MaskFrame,
-    a: (f64, f64),
-    b: (f64, f64),
-    radius: f64,
-) {
+fn carve_capsule(mask: &mut [bool], frame: MaskFrame, a: (f64, f64), b: (f64, f64), radius: f64) {
     let MaskFrame {
         width,
         height,
@@ -458,9 +457,7 @@ fn carve_capsule(
     let lo_i = (ax.min(bx) - radius).floor() as isize;
     let hi_i = (ax.max(bx) + radius).ceil() as isize;
     let lo_j = (ay.min(by) - radius).floor().max(0.0) as isize;
-    let hi_j = (ay.max(by) + radius)
-        .ceil()
-        .min((height - 1) as f64) as isize;
+    let hi_j = (ay.max(by) + radius).ceil().min((height - 1) as f64) as isize;
     let r2 = radius * radius;
 
     for j in lo_j..=hi_j {
@@ -959,10 +956,10 @@ impl FinePatch {
     /// Patch-local bilinear lookup. Lat / lon clamp to the cell-centre
     /// range; the caller is expected to bbox-check first via [`Self::bbox`].
     fn bilinear<F: Fn(usize, usize) -> f32>(&self, lon: f64, lat: f64, sample: F) -> f32 {
-        let fi = ((lon - self.bbox.lon_min) / self.cell_deg - 0.5)
-            .clamp(0.0, (self.width - 1) as f64);
-        let fj = ((lat - self.bbox.lat_min) / self.cell_deg - 0.5)
-            .clamp(0.0, (self.height - 1) as f64);
+        let fi =
+            ((lon - self.bbox.lon_min) / self.cell_deg - 0.5).clamp(0.0, (self.width - 1) as f64);
+        let fj =
+            ((lat - self.bbox.lat_min) / self.cell_deg - 0.5).clamp(0.0, (self.height - 1) as f64);
         let i0 = fi.floor() as usize;
         let j0 = fj.floor() as usize;
         let i1 = (i0 + 1).min(self.width - 1);
@@ -1144,9 +1141,10 @@ impl TwoTierLandmass {
         let cell = self.decode_cell(idx);
         let (centre, cell_deg) = match cell {
             TwoTierCell::Coarse { i, j } => (self.coarse.cell_centre(i, j), self.coarse.cell_deg()),
-            TwoTierCell::Fine { patch, i, j } => {
-                (self.fine[patch].cell_centre(i, j), self.fine[patch].cell_deg())
-            }
+            TwoTierCell::Fine { patch, i, j } => (
+                self.fine[patch].cell_centre(i, j),
+                self.fine[patch].cell_deg(),
+            ),
         };
         [-1isize, 0, 1].into_iter().flat_map(move |dj| {
             [-1isize, 0, 1].into_iter().filter_map(move |di| {
@@ -1667,10 +1665,7 @@ fn astar_sea_path_two_tier(
                 continue;
             }
             let neighbour_centre = two_tier.cell_centre_at_idx(neighbour);
-            if neighbour != start
-                && neighbour != goal
-                && !bounds.bbox.contains(neighbour_centre)
-            {
+            if neighbour != start && neighbour != goal && !bounds.bbox.contains(neighbour_centre) {
                 continue;
             }
             let step = haversine(cur_centre, neighbour_centre);
@@ -1757,10 +1752,7 @@ pub fn landmass_grid_at_resolution(resolution_deg: f64) -> &'static LandmassGrid
 /// `max(1.0°, 2 × coarse_deg)`. Overlapping padded bboxes are merged so
 /// the Turkish-straits chain (Dardanelles + Sea of Marmara + Bosporus)
 /// ends up as one patch rather than three.
-pub fn landmass_grid_two_tier(
-    coarse_deg: f64,
-    fine_deg: f64,
-) -> &'static TwoTierLandmass {
+pub fn landmass_grid_two_tier(coarse_deg: f64, fine_deg: f64) -> &'static TwoTierLandmass {
     static REGISTRY: OnceLock<Mutex<HashMap<(u64, u64), &'static TwoTierLandmass>>> =
         OnceLock::new();
     let registry = REGISTRY.get_or_init(|| Mutex::new(HashMap::new()));
@@ -1772,8 +1764,7 @@ pub fn landmass_grid_two_tier(
     if let Some(grid) = guard.get(&key) {
         return grid;
     }
-    let built: &'static TwoTierLandmass =
-        Box::leak(Box::new(build_two_tier(coarse_deg, fine_deg)));
+    let built: &'static TwoTierLandmass = Box::leak(Box::new(build_two_tier(coarse_deg, fine_deg)));
     guard.insert(key, built);
     built
 }
@@ -2088,7 +2079,12 @@ mod tests {
         RouteBounds::new(
             origin,
             destination,
-            LonLatBbox { lon_min: -30.0, lon_max: 30.0, lat_min: -25.0, lat_max: 25.0 },
+            LonLatBbox {
+                lon_min: -30.0,
+                lon_max: 30.0,
+                lat_min: -25.0,
+                lat_max: 25.0,
+            },
         )
     }
 
@@ -2102,7 +2098,12 @@ mod tests {
         let bounds = RouteBounds::new(
             origin,
             destination,
-            LonLatBbox { lon_min: -180.0, lon_max: 180.0, lat_min: -45.0, lat_max: 45.0 },
+            LonLatBbox {
+                lon_min: -180.0,
+                lon_max: 180.0,
+                lat_min: -45.0,
+                lat_max: 45.0,
+            },
         );
         let polyline = grid
             .find_sea_path(origin, destination, &bounds, SeaPathBias::None)
@@ -2155,7 +2156,12 @@ mod tests {
         let bounds = RouteBounds::new(
             origin,
             destination,
-            LonLatBbox { lon_min: -30.0, lon_max: 30.0, lat_min: -20.0, lat_max: 9.0 },
+            LonLatBbox {
+                lon_min: -30.0,
+                lon_max: 30.0,
+                lat_min: -20.0,
+                lat_max: 9.0,
+            },
         );
         let polyline = grid
             .find_sea_path(origin, destination, &bounds, SeaPathBias::None)
@@ -2243,7 +2249,12 @@ mod tests {
         let bounds = RouteBounds::new(
             aegean,
             black_sea,
-            LonLatBbox { lon_min: 22.0, lon_max: 35.0, lat_min: 36.0, lat_max: 46.0 },
+            LonLatBbox {
+                lon_min: 22.0,
+                lon_max: 35.0,
+                lat_min: 36.0,
+                lat_max: 46.0,
+            },
         );
         let path = grid
             .find_sea_path(aegean, black_sea, &bounds, SeaPathBias::None)
@@ -2279,7 +2290,12 @@ mod tests {
         let bounds = RouteBounds::new(
             origin,
             destination,
-            LonLatBbox { lon_min: -32.35, lon_max: 69.85, lat_min: -49.85, lat_max: 52.35 },
+            LonLatBbox {
+                lon_min: -32.35,
+                lon_max: 69.85,
+                lat_min: -49.85,
+                lat_max: 52.35,
+            },
         );
         let polyline = grid
             .find_sea_path(origin, destination, &bounds, SeaPathBias::None)
@@ -2316,8 +2332,12 @@ mod tests {
         // path would underreport with this value; the new clamp inside
         // `get_segment_land_metres` kicks in regardless.
         let coarse_step_m = 160_000.0;
-        let land_m =
-            swarmkit_sailing::get_segment_land_metres(grid, mediterranean, arabian_sea, coarse_step_m);
+        let land_m = swarmkit_sailing::get_segment_land_metres(
+            grid,
+            mediterranean,
+            arabian_sea,
+            coarse_step_m,
+        );
         // The chord physically traverses roughly 2 500–3 500 km of land
         // (Libya, Egypt, Saudi Arabia, Yemen) out of ~6 000 km total.
         // Even a conservative lower bound of 1 000 km would have been
@@ -2337,7 +2357,12 @@ mod tests {
         let bounds = RouteBounds::new(
             atlantic,
             mediterranean,
-            LonLatBbox { lon_min: -10.0, lon_max: 5.0, lat_min: 33.0, lat_max: 40.0 },
+            LonLatBbox {
+                lon_min: -10.0,
+                lon_max: 5.0,
+                lat_min: 33.0,
+                lat_max: 40.0,
+            },
         );
         let path = grid
             .find_sea_path(atlantic, mediterranean, &bounds, SeaPathBias::None)
@@ -2474,7 +2499,12 @@ mod tests {
         let bounds = RouteBounds::new(
             origin,
             destination,
-            LonLatBbox { lon_min: -19.55, lon_max: 42.05, lat_min: 32.20, lat_max: 46.45 },
+            LonLatBbox {
+                lon_min: -19.55,
+                lon_max: 42.05,
+                lat_min: 32.20,
+                lat_max: 46.45,
+            },
         );
         let polyline = two_tier
             .find_sea_path(origin, destination, &bounds, SeaPathBias::None)
@@ -2490,7 +2520,8 @@ mod tests {
             .filter(|p| two_tier.signed_distance_m(**p) < 0.0)
             .count();
         assert_eq!(
-            bad_count, 0,
+            bad_count,
+            0,
             "{bad_count} of {} A* polyline vertices report fine-land",
             interior.len(),
         );
@@ -2511,7 +2542,12 @@ mod tests {
         let bounds = RouteBounds::new(
             red_sea,
             south_china_sea,
-            LonLatBbox { lon_min: 30.0, lon_max: 110.0, lat_min: -15.0, lat_max: 30.0 },
+            LonLatBbox {
+                lon_min: 30.0,
+                lon_max: 110.0,
+                lat_min: -15.0,
+                lat_max: 30.0,
+            },
         );
         let polyline = grid
             .find_sea_path(red_sea, south_china_sea, &bounds, SeaPathBias::None)
@@ -2545,7 +2581,12 @@ mod tests {
         let bounds = RouteBounds::new(
             origin,
             destination,
-            LonLatBbox { lon_min: -90.0, lon_max: 90.0, lat_min: -60.0, lat_max: 60.0 },
+            LonLatBbox {
+                lon_min: -90.0,
+                lon_max: 90.0,
+                lat_min: -60.0,
+                lat_max: 60.0,
+            },
         );
         assert!(
             grid.find_sea_path(origin, destination, &bounds, SeaPathBias::None)

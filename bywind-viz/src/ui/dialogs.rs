@@ -590,9 +590,7 @@ impl BywindApp {
                         "YYYYMMDD or YYYYMMDDHH. Snapped to the most recent 00 / 06 / 12 / 18z \
                          GEFS cycle. Default = the loaded wind map's start.",
                     );
-                    ui.text_edit_singleline(
-                        &mut self.editor.fetch_ensemble_dialog.start_text,
-                    );
+                    ui.text_edit_singleline(&mut self.editor.fetch_ensemble_dialog.start_text);
                     ui.end_row();
 
                     ui.label("End (UTC):").on_hover_text(
@@ -657,9 +655,7 @@ impl BywindApp {
                          loader can read the folder directly. Empty = write into the \
                          destination dir itself.",
                     );
-                    ui.text_edit_singleline(
-                        &mut self.editor.fetch_ensemble_dialog.basename,
-                    );
+                    ui.text_edit_singleline(&mut self.editor.fetch_ensemble_dialog.basename);
                     ui.end_row();
                 });
         });
@@ -774,8 +770,7 @@ impl BywindApp {
             out_dir.join(dlg.basename.trim())
         };
         self.fetch_ensemble_job.reset_log();
-        let (rx, cancel) =
-            crate::fetch::spawn_ensemble_worker(spec, members, out_dir, ctx.clone());
+        let (rx, cancel) = crate::fetch::spawn_ensemble_worker(spec, members, out_dir, ctx.clone());
         self.fetch_ensemble_job.attach(rx, cancel);
     }
 }
