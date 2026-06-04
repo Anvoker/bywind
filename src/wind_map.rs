@@ -554,6 +554,36 @@ impl TimedWindMap {
         self
     }
 
+    /// Drop frames past index `n - 1` so the result has exactly `n`
+    /// frames. No-op when `n >= frame_count()`. Updates [`Self::time_range`]
+    /// to reflect the new last-frame timestamp (the original end was
+    /// `start + (frame_count() - 1) * step_seconds`; the new end is
+    /// `start + (n - 1) * step_seconds`).
+    ///
+    /// Primary caller: [`crate::TimedEnsembleWindMap::from_members`],
+    /// which clips members to the shortest one's frame count when
+    /// NOAA's bucket serves uneven-length perturbations. See
+    /// [`crate::ensemble`] for the policy.
+    ///
+    /// # Panics
+    /// Panics if `n == 0` — [`Self::new`] requires at least one frame
+    /// and consumers (search / query) rely on the non-empty invariant.
+    pub fn truncate_to(&mut self, n: usize) {
+        assert!(
+            n >= 1,
+            "TimedWindMap must retain at least one frame; got truncate_to(0)",
+        );
+        if n >= self.frames.len() {
+            return;
+        }
+        self.frames.truncate(n);
+        if let Some((start, _)) = self.time_range {
+            let last_offset_secs = (n - 1) as f64 * f64::from(self.step_seconds);
+            let last_offset = chrono::Duration::milliseconds((last_offset_secs * 1000.0) as i64);
+            self.time_range = Some((start, start + last_offset));
+        }
+    }
+
     /// Attach the dataset's UTC `(start, end)` time bounds. Consumers
     /// surface them in `bywind-cli info` and the GUI's Time section.
     /// The two timestamps are kept in order — if `start > end` the

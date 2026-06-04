@@ -110,6 +110,10 @@ impl TimedEnsembleWindMap {
     /// Construct from pre-decoded members. Length must match
     /// `member_names`. Intended for tests / programmatic use;
     /// production code goes through [`Self::load_dir`].
+    ///
+    /// Members with different frame counts are silently clipped to
+    /// the shortest member's count (see [`Self::normalize_frame_counts`]
+    /// for the rationale + the warning log emitted when this fires).
     pub fn from_members(members: Vec<TimedWindMap>, member_names: Vec<String>) -> Self {
         assert_eq!(
             members.len(),
@@ -118,9 +122,54 @@ impl TimedEnsembleWindMap {
             members.len(),
             member_names.len(),
         );
-        Self {
+        let mut this = Self {
             members,
             member_names,
+        };
+        this.normalize_frame_counts();
+        this
+    }
+
+    /// Clip every member down to the shortest member's frame count
+    /// so all members share `nt` after `bake`. The shared-`nt`
+    /// precondition is required by [`BakedEnsembleWindMap::mean`]
+    /// (which assert-`nt`s across members when collapsing to a single
+    /// wind map) and is convenient for the K-fold search loop (every
+    /// particle evaluation indexes the same time axis across members).
+    ///
+    /// NOAA's GEFS bucket occasionally serves one fewer forecast hour
+    /// for some perturbed members — the late-publishing tail. Without
+    /// this normalization, a downstream `mean()` call panics with
+    /// "ensemble member k has mismatched grid dims". The clipping
+    /// loses at most a few frames at the tail of the longest members;
+    /// none of the per-route metrics care.
+    ///
+    /// Emits a [`log::warn!`] line when any clipping actually
+    /// happens, listing the affected members and their original
+    /// counts, so users can spot pathological inputs (e.g. one member
+    /// having half the frames of the others) in the logs.
+    fn normalize_frame_counts(&mut self) {
+        let Some(min_frames) = self.members.iter().map(TimedWindMap::frame_count).min() else {
+            return;
+        };
+        let mut affected: Vec<(String, usize)> = Vec::new();
+        for (name, m) in self.member_names.iter().zip(self.members.iter_mut()) {
+            let original = m.frame_count();
+            if original > min_frames {
+                affected.push((name.clone(), original));
+                m.truncate_to(min_frames);
+            }
+        }
+        if !affected.is_empty() {
+            let listing: Vec<String> = affected
+                .iter()
+                .map(|(n, count)| format!("{n}={count}"))
+                .collect();
+            log::warn!(
+                "ensemble: clipping all members to {min_frames} frames; \
+                 these members were longer: [{}]",
+                listing.join(", "),
+            );
         }
     }
 
@@ -226,10 +275,10 @@ impl TimedEnsembleWindMap {
             })
             .collect();
 
-        Ok(Self {
-            members: members?,
-            member_names,
-        })
+        // Funnel through `from_members` so frame-count normalization
+        // and any future invariants happen in one place rather than
+        // forking the construction logic between callers.
+        Ok(Self::from_members(members?, member_names))
     }
 }
 
@@ -366,6 +415,11 @@ mod tests {
         WindMap::new(rows)
     }
 
+    fn uniform_timed_n_frames(speed: f32, direction: f32, n: usize) -> TimedWindMap {
+        let frames: Vec<WindMap> = (0..n).map(|_| uniform_wind_map(speed, direction)).collect();
+        TimedWindMap::new(frames, 3600.0)
+    }
+
     fn uniform_timed(speed: f32, direction: f32) -> TimedWindMap {
         TimedWindMap::new(vec![uniform_wind_map(speed, direction)], 3600.0)
     }
@@ -380,6 +434,43 @@ mod tests {
         });
         drop(std::panic::take_hook());
         assert!(res.is_err());
+    }
+
+    /// Regression: NOAA's GEFS bucket occasionally serves one fewer
+    /// forecast hour for some perturbed members. Before
+    /// `normalize_frame_counts`, baking such an ensemble produced
+    /// per-member `BakedWindMap`s with mismatched `nt`, which made the
+    /// downstream `mean()` call panic on its `(nx, ny, nt)` assert.
+    /// `from_members` now clips every member to the shortest count at
+    /// construction, so the bake + mean path succeeds and every member
+    /// shares the same time axis.
+    #[test]
+    fn mismatched_frame_counts_clip_to_shortest_at_load() {
+        let a = uniform_timed_n_frames(5.0, 90.0, 3);
+        let b = uniform_timed_n_frames(5.0, 90.0, 5);
+        let c = uniform_timed_n_frames(5.0, 90.0, 4);
+        let ensemble = TimedEnsembleWindMap::from_members(
+            vec![a, b, c],
+            vec!["gec00".to_owned(), "gep01".to_owned(), "gep02".to_owned()],
+        );
+        for (i, m) in ensemble.members().iter().enumerate() {
+            assert_eq!(
+                m.frame_count(),
+                3,
+                "member {i} should be clipped to 3 frames after normalization",
+            );
+        }
+        // The whole point: this combination panicked before the fix.
+        let bounds = BakeBounds {
+            bbox: LonLatBbox { lon_min: 0.0, lon_max: 1.0, lat_min: 0.0, lat_max: 1.0 },
+            step: 1.0,
+            coord_scale: 1.0,
+        };
+        let baked = ensemble.bake(bounds);
+        for (i, m) in baked.members().iter().enumerate() {
+            assert_eq!(m.nt(), 3, "baked member {i} should also be at nt=3");
+        }
+        drop(baked.mean()); // would have asserted with the old code
     }
 
     #[test]
