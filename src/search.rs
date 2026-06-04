@@ -362,6 +362,7 @@ pub fn run_search_blocking(
     fine_sdf_resolution_deg: Option<f64>,
     progress: &mut dyn FnMut(SearchProgressEvent),
 ) -> Result<SearchResult, SearchError> {
+    progress(SearchProgressEvent::Phase(SearchPhase::Baking));
     let bake_start = std::time::Instant::now();
     let baked = wind_map.bake(bake_bounds);
     let bake_duration = bake_start.elapsed();
@@ -387,15 +388,21 @@ pub fn run_search_blocking(
 /// A search worker can install a `&mut dyn FnMut(SearchProgressEvent)`
 /// closure to receive these events as soon as the corresponding work
 /// finishes — letting the UI paint partial results before the
-/// terminal `SearchResult` lands. Today only the benchmark route fires
-/// a progress event; per-iteration gbest updates may join later.
+/// terminal `SearchResult` lands. Today the variants cover phase
+/// transitions and the early benchmark route; per-iteration gbest
+/// updates may join later.
 ///
-/// Variants are `#[non_exhaustive]` so new event kinds (e.g. an
-/// iteration-completed event) can land without breaking existing
-/// match arms; consumers should always include a default arm.
+/// Variants are `#[non_exhaustive]` so new event kinds can land
+/// without breaking existing match arms; consumers should always
+/// include a default arm.
 #[non_exhaustive]
 #[derive(Clone, Debug)]
 pub enum SearchProgressEvent {
+    /// Search has transitioned into a new phase. Fires once per
+    /// transition so consumers can update a status label without
+    /// polling internal state. See [`SearchPhase`] for the meaning of
+    /// each variant.
+    Phase(SearchPhase),
     /// A* + time-PSO benchmark route, emitted **before** the main PSO
     /// starts. The benchmark is the cheap reference the user compares
     /// the main result against; surfacing it early lets the UI draw
@@ -404,6 +411,51 @@ pub enum SearchProgressEvent {
     /// / bbox excludes all water); the search continues but there's
     /// no benchmark to compare against in that case.
     BenchmarkReady(BenchmarkRoute),
+}
+
+/// Coarse phase markers for the search pipeline.
+///
+/// Emitted by the `Phase` variant of [`SearchProgressEvent`] so the
+/// UI can swap a generic "searching…" indicator for a specific
+/// "baking…" / "computing benchmark…" label as each chunk of work
+/// begins. `#[non_exhaustive]` so future intermediate phases (e.g.
+/// an `EnsembleSpread` step) can join without breaking match arms.
+#[non_exhaustive]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum SearchPhase {
+    /// Decoding wind data from disk. Only fires from consumers that
+    /// own the I/O layer (the viz's ensemble worker) — the core
+    /// search functions assume their inputs are already in memory.
+    Loading,
+    /// Rasterising a [`TimedWindMap`] (or K of them, for ensembles)
+    /// into the search-side regular grid. Fires from [`run_search_blocking`]
+    /// for the single-deterministic case and from the viz's ensemble
+    /// worker for the K-member case (the latter also covers the
+    /// `mean()` reduction that runs before the K-fold search starts).
+    Baking,
+    /// Computing the A* sea path + time-PSO refinement that becomes
+    /// the [`BenchmarkRoute`] reference overlay. Always followed by
+    /// [`SearchProgressEvent::BenchmarkReady`] when A* succeeds;
+    /// followed directly by [`Self::RunningPso`] when it fails.
+    Benchmark,
+    /// Main particle-swarm optimisation. Today the only sub-event
+    /// during this phase is `Phase(RunningPso)` itself at start;
+    /// per-iteration gbest events may join later.
+    RunningPso,
+}
+
+impl SearchPhase {
+    /// Short lowercase label suitable for an in-progress status line
+    /// (e.g. next to a spinner). Matches the existing fetch-dialog
+    /// "fetching…" / "encoding…" tone.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Loading => "loading wind data…",
+            Self::Baking => "baking wind grid…",
+            Self::Benchmark => "computing benchmark…",
+            Self::RunningPso => "searching…",
+        }
+    }
 }
 
 /// Per-search wind input: a single deterministic baked map, or an
@@ -594,6 +646,7 @@ fn run_search_inner<LS: LandmassSource>(
         // path + time-PSO refinement. Emitting the event drops the
         // user-visible "search is alive" latency from "wait for the
         // full result" to "wait for A* + time-PSO" (typically <2 s).
+        progress(SearchProgressEvent::Phase(SearchPhase::Benchmark));
         let benchmark = compute_benchmark::<N, _, _>(
             &ship,
             &baked,
@@ -605,6 +658,7 @@ fn run_search_inner<LS: LandmassSource>(
         if let Some(b) = &benchmark {
             progress(SearchProgressEvent::BenchmarkReady(b.clone()));
         }
+        progress(SearchProgressEvent::Phase(SearchPhase::RunningPso));
         let (gbest, evolution) = search::<N, _, _, _, _>(
             &ship,
             &baked,
@@ -706,6 +760,7 @@ fn run_search_inner_ensemble<LS: LandmassSource>(
         // the dashed bench overlay before the K-fold PSO begins;
         // K-fold can take meaningful wallclock at K=31, and showing
         // the bench up-front lets the user see the search is alive.
+        progress(SearchProgressEvent::Phase(SearchPhase::Benchmark));
         let bench_fit_calc = SailboatFitCalc::<N, _, _, _> {
             time_weight: weights.time_weight,
             fuel_weight: weights.fuel_weight,
@@ -731,6 +786,7 @@ fn run_search_inner_ensemble<LS: LandmassSource>(
         // query the mean wind (single representative). The init code
         // only needs `WindSource::sample_wind`, not per-member
         // fitness — using the mean here keeps the baselines stable.
+        progress(SearchProgressEvent::Phase(SearchPhase::RunningPso));
         let (gbest, evolution) = search::<N, _, _, _, _>(
             &ship,
             &mean,

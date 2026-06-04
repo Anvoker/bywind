@@ -938,7 +938,15 @@ impl BywindApp {
         if is_searching {
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.label("Searching…");
+                // Phase-specific label tells the user *what* is taking
+                // time — bake / benchmark / search — instead of a
+                // generic "Searching…" during the multi-second pre-PSO
+                // pipeline. Fallback covers the gap between worker
+                // spawn and the first Phase event.
+                let label = self
+                    .current_search_phase
+                    .map_or("searching…", bywind::SearchPhase::label);
+                ui.label(label);
             });
         }
 

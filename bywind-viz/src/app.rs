@@ -2,9 +2,9 @@ use std::sync::mpsc::{Receiver, TryRecvError};
 
 use bywind::{
     BoatConfig, EnsembleMode, GenerateConfig, LonLatBbox, MapBounds, RealizationRun, SearchConfig,
-    SearchError, SearchProgressEvent, SearchResult, SearchWeights, TimedWindMap, WindInput,
-    route_evolution_match, run_realizations, run_search_blocking, run_search_blocking_with_baked,
-    run_time_reopt_blocking,
+    SearchError, SearchPhase, SearchProgressEvent, SearchResult, SearchWeights, TimedWindMap,
+    WindInput, route_evolution_match, run_realizations, run_search_blocking,
+    run_search_blocking_with_baked, run_time_reopt_blocking,
 };
 
 use crate::config::{EditorState, Tool, ViewState};
@@ -69,6 +69,13 @@ pub struct BywindApp {
     #[serde(skip)]
     pub(crate) search_progress_rx: Option<std::sync::mpsc::Receiver<SearchProgressEvent>>,
 
+    /// Latest [`SearchPhase`] event received over `search_progress_rx`.
+    /// `Some(_)` while a search is running so the UI can show
+    /// "baking…" / "computing benchmark…" / "searching…" instead of a
+    /// generic spinner; cleared back to `None` on the terminal `Done`.
+    #[serde(skip)]
+    pub(crate) current_search_phase: Option<SearchPhase>,
+
     /// Background worker + log buffer for `File → Fetch from AWS…`.
     /// Streams `bywind::fetch::FetchProgress` events back via mpsc and
     /// holds the shared cancel flag.
@@ -118,6 +125,7 @@ impl Default for BywindApp {
             realization_job: AsyncJob::default(),
             realization_started_at: None,
             search_progress_rx: None,
+            current_search_phase: None,
             bundled_sample_job: AsyncJob::default(),
             #[cfg(not(target_arch = "wasm32"))]
             fetch_job: crate::fetch::FetchJob::default(),
@@ -288,12 +296,21 @@ impl BywindApp {
         let ship = self.boat.to_boat();
         let ensemble_mode = self.search.ensemble_mode;
         let (tx, rx) = std::sync::mpsc::channel();
-        // Side channel for in-progress events (currently just the A*
-        // benchmark, emitted before the main PSO begins). Stored on
-        // the app so the per-frame poll can drain it; cleared when
-        // the terminal `Done` event arrives.
+        // Side channel for in-progress events (phase transitions and
+        // the early-emitted A* benchmark). Stored on the app so the
+        // per-frame poll can drain it; cleared when the terminal
+        // `Done` event arrives.
         let (progress_tx, progress_rx) = std::sync::mpsc::channel::<SearchProgressEvent>();
         self.search_progress_rx = Some(progress_rx);
+        // Seed the phase indicator before any event arrives so the
+        // status label switches off "Searching…" the moment the
+        // worker spawns rather than after the first Phase event.
+        // The worker overwrites this within milliseconds.
+        self.current_search_phase = Some(if ensemble_dispatch.is_some() {
+            SearchPhase::Loading
+        } else {
+            SearchPhase::Baking
+        });
         // Drop any benchmark from a previous search so the dashed
         // overlay doesn't linger as a stale reference while the new
         // search runs. The new bench lands via `BenchmarkReady` as
@@ -612,6 +629,9 @@ impl eframe::App for BywindApp {
         if let Some(rx) = self.search_progress_rx.as_ref() {
             loop {
                 match rx.try_recv() {
+                    Ok(SearchProgressEvent::Phase(phase)) => {
+                        self.current_search_phase = Some(phase);
+                    }
                     Ok(SearchProgressEvent::BenchmarkReady(b)) => {
                         self.outputs.benchmark = Some(b);
                     }
@@ -632,6 +652,10 @@ impl eframe::App for BywindApp {
 
         if let Some(msg) = self.search_job.poll() {
             self.search_started_at = None;
+            // Search is done; drop the phase indicator regardless of
+            // outcome so the status label stops claiming the search
+            // is still in flight.
+            self.current_search_phase = None;
             match msg {
                 Ok(SearchResult {
                     route_evolution,
@@ -813,6 +837,7 @@ fn run_ensemble_search(
     ensemble_mode: EnsembleMode,
     progress: &mut dyn FnMut(SearchProgressEvent),
 ) -> Result<SearchResult, SearchError> {
+    progress(SearchProgressEvent::Phase(SearchPhase::Loading));
     let ensemble = match bywind::TimedEnsembleWindMap::load_dir(ensemble_path) {
         Ok(e) => e,
         Err(e) => {
@@ -822,6 +847,11 @@ fn run_ensemble_search(
             });
         }
     };
+    // K member bakes + the `mean()` reduction inside
+    // `ensemble_full` / `ensemble_fast_mean` are all "rasterise to the
+    // search grid" work from the user's perspective, so they share the
+    // single Baking phase label.
+    progress(SearchProgressEvent::Phase(SearchPhase::Baking));
     let baked = ensemble.bake(bake_bounds);
     let wind_input = match ensemble_mode {
         EnsembleMode::Full => WindInput::ensemble_full(baked),
