@@ -288,7 +288,7 @@ impl BywindApp {
     /// caller can flip the `show_realization_routes` toggle without
     /// having to also gate it on cohort presence.
     fn render_realization_overlay(&self, ui: &egui::Ui, view: &ViewTransform) {
-        const REALIZATION_ALPHA: u8 = 110;
+        const REALIZATION_ALPHA: u8 = 183;
         for (idx, run) in self.outputs.realization_runs.iter().enumerate() {
             let color = realization_palette_color(idx, REALIZATION_ALPHA);
             route_evolution_match!(&run.route_evolution, |evo| {

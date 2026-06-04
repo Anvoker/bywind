@@ -1274,7 +1274,17 @@ pub(crate) fn draw_benchmark_route(
     benchmark: &BenchmarkRoute,
     view: &ViewTransform,
 ) {
-    let stroke_color = egui::Color32::from_rgba_unmultiplied(80, 180, 200, 200);
+    // Bright cyan reads well against the dark-mode panel; in light mode the
+    // same colour washes out into the background, so darken further by 30%
+    // for light mode (channel × 0.7 relative to dark). Both modes then take
+    // an additional global 10% darken pass to give the dashed bench-route
+    // more contrast against the wind-barb backdrop. egui exposes the active
+    // mode via `visuals.dark_mode`; the painter's context carries the style.
+    let stroke_color = if painter.ctx().global_style().visuals.dark_mode {
+        egui::Color32::from_rgba_unmultiplied(86, 223, 216, 200)
+    } else {
+        egui::Color32::from_rgba_unmultiplied(60, 157, 151, 200)
+    };
     let dash_len = 8.0;
     let gap_len = 6.0;
 
