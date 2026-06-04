@@ -31,48 +31,33 @@ impl BywindApp {
                 None => (None, None),
             },
         };
-        // Nested layout: the right panel hosts a bottom sub-panel pinned to
-        // the Summary totals, and a central sub-panel above it for the
-        // scrolling Segments list. Earlier we tried a single `bottom_up`
-        // panel with a `with_layout(top_down)` block wrapping a `ScrollArea`
-        // for the segments; with long routes (~30 waypoints) the ScrollArea
-        // sized to its content instead of the available height, the right
-        // panel grew past the window, and the bottom evolution panel /
-        // central minimap got pushed off-screen. Splitting into nested
-        // panels gives the segments scroll a hard height ceiling from the
-        // central sub-panel.
+        // Top-down layout inside the right panel: Summary + view selector
+        // size to their actual current content at the top, the Segments
+        // ScrollArea fills the rest. The visual flip relative to the old
+        // "Summary at bottom" layout is intentional — pinning the summary
+        // via `Panel::bottom` regressed: the panel state's stored `rect`
+        // gets reused on each frame, so a one-time-tall summary (ensemble
+        // spread + bench grid + ~30-row route) locked the panel at the
+        // tall height and squished the segments list above it. Nested
+        // `bottom_up` + `top_down` sub-uis had cursor / rect-overlap
+        // issues we couldn't tame. A plain top-down flow + a single
+        // ScrollArea with `auto_shrink([_, false])` is the version that
+        // actually distributes the leftover height to the scroll, frame
+        // after frame.
         egui::Panel::right("stats_panel").show_inside(ui, |ui| {
-            egui::Panel::bottom("stats_panel_summary").show_inside(ui, |ui| {
-                // View selector pinned to the screen-bottom edge of
-                // the summary panel via a nested `Panel::bottom`, so
-                // the dropdown doesn't shift around as bench /
-                // ensemble blocks above it appear and disappear. Only
-                // wrapped when there's actually a cohort to pick
-                // from; an empty selector would otherwise eat a strip
-                // of vertical space at the bottom for no payoff.
-                if !self.outputs.realization_runs.is_empty() {
-                    egui::Panel::bottom("stats_panel_selector").show_inside(ui, |ui| {
-                        self.render_summary_selector(ui);
-                    });
-                }
-                egui::CentralPanel::default().show_inside(ui, |ui| {
-                    toggle_summary =
-                        self.render_stats_summary(ui, stats.as_deref(), selected_fitness);
+            toggle_summary = self.render_stats_summary(ui, stats.as_deref(), selected_fitness);
+            ui.separator();
+            ui.heading("Segments");
+            ui.separator();
+            egui::ScrollArea::vertical()
+                .id_salt("segment_stats_scroll")
+                .auto_shrink([true, false])
+                .show(ui, |ui| match stats.as_deref() {
+                    Some(stats) => self.render_segment_rows(ui, stats),
+                    None => {
+                        ui.label("(no search yet)");
+                    }
                 });
-            });
-            egui::CentralPanel::default().show_inside(ui, |ui| {
-                ui.heading("Segments");
-                ui.separator();
-                egui::ScrollArea::vertical()
-                    .id_salt("segment_stats_scroll")
-                    .auto_shrink([true, false])
-                    .show(ui, |ui| match stats.as_deref() {
-                        Some(stats) => self.render_segment_rows(ui, stats),
-                        None => {
-                            ui.label("(no search yet)");
-                        }
-                    });
-            });
         });
         if toggle_summary {
             self.view.total_time_breakdown = !self.view.total_time_breakdown;
@@ -87,13 +72,22 @@ impl BywindApp {
     /// if the Summary heading was right-clicked this frame so the
     /// caller can toggle the unit display.
     fn render_stats_summary(
-        &self,
+        &mut self,
         ui: &mut egui::Ui,
         stats: Option<&[bywind::SegmentMetrics]>,
         selected_fitness: Option<f64>,
     ) -> bool {
         let toggle_summary = ui.heading("Summary").secondary_clicked();
         ui.separator();
+        // View selector anchored right under the heading so it stays put
+        // when the rest of the summary's height changes (bench grid +
+        // ensemble spread vs. realization-comparison grid have very
+        // different vertical footprints). Only rendered when there's
+        // actually a cohort to pick from.
+        if !self.outputs.realization_runs.is_empty() {
+            self.render_summary_selector(ui);
+            ui.separator();
+        }
         let Some(stats) = stats else {
             ui.label("(no search yet)");
             return toggle_summary;
