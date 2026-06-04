@@ -672,7 +672,7 @@ checksum = "1e748733b7cbc798e1434b6ac524f0c1ff2ab456fe201501e6497c8417a4fc33"
 
 [[package]]
 name = "bywind"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "chrono",
  "grib",
@@ -694,7 +694,7 @@ dependencies = [
 
 [[package]]
 name = "bywind-cli"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "bywind",
@@ -707,7 +707,7 @@ dependencies = [
 
 [[package]]
 name = "bywind-dev"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "bywind",
  "swarmkit-sailing",
@@ -715,7 +715,7 @@ dependencies = [
 
 [[package]]
 name = "bywind-viz"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "bywind",
  "chrono",
@@ -4027,7 +4027,7 @@ dependencies = [
 
 [[package]]
 name = "swarmkit-sailing"
-version = "0.1.2"
+version = "0.2.0"
 dependencies = [
  "derive_more",
  "rand 0.10.1",

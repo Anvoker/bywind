@@ -12,7 +12,7 @@ default-members = [".", "bywind-viz", "bywind-cli", "swarmkit-sailing"]
 # its own `[package]` so we don't repeat license / edition / etc. four times.
 
 [workspace.package]
-version = "0.1.2"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 authors = ["Anvoker <anlogcode@pm.me>"]
@@ -80,7 +80,7 @@ chrono.workspace = true
 toml = "1"
 grib = { version = "0.15", default-features = false, features = ["png-unpack-with-png-crate"] }
 kiddo = "5"
-swarmkit-sailing = { path = "swarmkit-sailing", version = "0.1" }
+swarmkit-sailing = { path = "swarmkit-sailing", version = "0.2" }
 # `baked_codec` payload compression. zstd-rs links a vendored C library
 # and at present doesn't cross-compile cleanly to `wasm32-unknown-unknown`
 # (it would need a clang/wasm toolchain). The wasm build of `bywind-viz`
