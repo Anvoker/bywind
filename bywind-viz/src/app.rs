@@ -647,16 +647,23 @@ impl eframe::App for BywindApp {
         }
 
         // The embedded-sample decoder runs once at startup. When it
-        // lands we slot the bundled wind map into `wind_map` and clear
-        // any persisted waypoint state pinned to a prior session's
-        // coordinates.
+        // lands we slot the bundled wind map into `wind_map` and
+        // invalidate the view's grid-derived cache. Waypoints,
+        // bbox, and any other editor state are deliberately
+        // preserved: the bundled sample is an *ambient* async load
+        // (no explicit user action), so it races against actions the
+        // user takes during startup. The bad case it used to lose:
+        // user clicks `File → Load Scenario` before the sample
+        // arrives, the scenario populates start/end/bbox, then the
+        // sample lands and silently wipes them. The persisted-state-
+        // from-prior-session concern that motivated the old clears
+        // is real but rare, and the waypoints are real-world
+        // (lon, lat) coordinates — they remain geographically
+        // meaningful even if they sit awkwardly on the new map.
         if let Some(result) = self.bundled_sample_job.poll() {
             match result {
                 Ok(map) => {
                     self.wind_map = Some(map);
-                    self.editor.start_waypoint = None;
-                    self.editor.end_waypoint = None;
-                    self.editor.route_bbox = None;
                     self.view.view_lon0 = None;
                     self.view.view_lat0 = None;
                     // Invalidate any wrap-region cache pinned to the
