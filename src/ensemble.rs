@@ -352,6 +352,15 @@ impl BakedEnsembleWindMap {
                 (first.nx(), first.ny(), first.nt()),
                 "ensemble member {i} has mismatched grid dims vs member 0",
             );
+            // Per-frame offsets must also match — clipped members
+            // might share nt while disagreeing on *which* frames are
+            // gaps (e.g. member A skipped frame 50, member B skipped
+            // frame 100). Averaging across non-aligned slots blends
+            // different forecast hours, which is meaningless.
+            assert_eq!(
+                m.t_frame_offsets, first.t_frame_offsets,
+                "ensemble member {i} has mismatched per-frame timestamps vs member 0",
+            );
         }
         let k_f = self.members.len() as f64;
         let mut grid: Vec<Wind> = Vec::with_capacity(first.grid.len());
@@ -375,6 +384,12 @@ impl BakedEnsembleWindMap {
             step: first.step,
             t_step_seconds: first.t_step_seconds,
             crossfade_seconds: first.crossfade_seconds,
+            // All members share grid geometry (asserted above), which
+            // includes the time axis — so `t_frame_offsets` is
+            // identical across members and we can just clone member
+            // 0's. If a future ensemble could mix uniform and
+            // non-uniform members we'd need to merge offsets here.
+            t_frame_offsets: first.t_frame_offsets.clone(),
             coord_scale: first.coord_scale,
         }
     }

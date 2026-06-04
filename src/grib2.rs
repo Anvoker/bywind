@@ -292,11 +292,18 @@ impl TimedWindMap {
         }
 
         let step_seconds = compute_median_step_seconds(&times);
-        let mut map = Self::new(frames, step_seconds);
+        // Per-frame offsets relative to frame 0. For uniform datasets
+        // this reduces to `[0, step, 2*step, …]`; for gap-preserving
+        // datasets (a GEFS fetch where one forecast hour 404'd) the
+        // affected interval is wider, which the downstream
+        // TimedWindMap query layer brackets correctly.
+        let &base_unix = times.first().expect("frames non-empty checked above");
+        let frame_offsets: Vec<f64> = times.iter().map(|t| (t - base_unix) as f64).collect();
+        let mut map = Self::new_with_offsets(frames, step_seconds, frame_offsets);
         // The GRIB2 messages carry their reference time + forecast
         // offsets per submessage, summed into `absolute_t` above. We
         // surface that as the dataset's UTC range so downstream tools
-        // (CLI `info`, GUI Time section, `.wcav` v2 header) can show
+        // (CLI `info`, GUI Time section, `.wcav` v2+ header) can show
         // "what real-world period does this file cover".
         if let (Some(&min_unix), Some(&max_unix)) = (times.first(), times.last())
             && let (Some(start), Some(end)) = (

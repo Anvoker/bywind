@@ -33,7 +33,7 @@
 //!
 //! ## File layout
 //!
-//! The header has two on-disk versions:
+//! The header has three on-disk versions:
 //!
 //! * **v1** (44-byte header, no datetime fields). The encoder no
 //!   longer emits v1 but the decoder still reads it for backward
@@ -41,12 +41,23 @@
 //! * **v2** (60-byte header, adds `start_unix_seconds` /
 //!   `end_unix_seconds` at offsets 44 and 52). Both fields are
 //!   `i64::MIN` when the dataset doesn't carry a UTC range
-//!   (synthetic generators, hand-rolled wind maps).
+//!   (synthetic generators, hand-rolled wind maps). The encoder no
+//!   longer emits v2; the decoder still reads it.
+//! * **v3** (60-byte fixed header identical to v2, followed by
+//!   `frame_count × i64` LE Unix seconds — one absolute timestamp
+//!   per frame). Lets the file represent non-uniform frame timing
+//!   (e.g. a fetch that hit a 404 on one of NOAA's 3-hour slots);
+//!   for uniform datasets the values follow the
+//!   `start_unix + i * step_seconds` pattern and are essentially
+//!   redundant with the v2 fields. `i64::MIN` per slot marks an
+//!   unknown timestamp (synthetic data with no UTC anchor); a
+//!   per-frame sentinel mixed with real timestamps is also legal
+//!   though atypical.
 //!
 //! | Offset | Size | Field          | Notes |
 //! |-------:|-----:|----------------|-------|
 //! |      0 |    8 | `magic`        | `b"WCAV\0\0\0\0"` |
-//! |      8 |    4 | `version`      | `u32`, current `2`; readers also accept `1` |
+//! |      8 |    4 | `version`      | `u32`, current `3`; readers also accept `1` and `2` |
 //! |     12 |    4 | `origin_lon`   | `f32`, longitude of cell `i=0` (degrees) |
 //! |     16 |    4 | `origin_lat`   | `f32`, latitude of cell `j=0` (degrees) |
 //! |     20 |    4 | `step_lon`     | `f32`, degrees per cell along longitude |
@@ -54,10 +65,11 @@
 //! |     28 |    4 | `nx`           | `u32`, longitude cell count |
 //! |     32 |    4 | `ny`           | `u32`, latitude cell count |
 //! |     36 |    4 | `frame_count`  | `u32`, number of time frames |
-//! |     40 |    4 | `step_seconds` | `f32`, seconds between frames |
-//! |     44 |    8 | `start_unix`   | `i64` LE Unix seconds (v2 only); `i64::MIN` = unknown |
-//! |     52 |    8 | `end_unix`     | `i64` LE Unix seconds (v2 only); `i64::MIN` = unknown |
-//! |     60 |    — | IVF stream     | AV1 frames (1 OBU per IVF frame, framerate=1) |
+//! |     40 |    4 | `step_seconds` | `f32`, *intended* seconds between frames (median for non-uniform v3) |
+//! |     44 |    8 | `start_unix`   | `i64` LE Unix seconds (v2+); `i64::MIN` = unknown |
+//! |     52 |    8 | `end_unix`     | `i64` LE Unix seconds (v2+); `i64::MIN` = unknown |
+//! |     60 |  8×N | `frame_times`  | `i64` LE Unix seconds per frame (v3 only) |
+//! |  60+8N |    — | IVF stream     | AV1 frames (1 OBU per IVF frame, framerate=1) |
 //!
 //! ## Latitude axis convention
 //!
@@ -88,7 +100,7 @@ use crate::wind_map::GridLayout;
 pub const MAGIC: [u8; 8] = *b"WCAV\0\0\0\0";
 /// Current on-disk format version. The encoder always emits this; the
 /// decoder also accepts older versions for backward compatibility.
-pub const VERSION: u32 = 2;
+pub const VERSION: u32 = 3;
 /// Bytes the v1 header occupies, before the IVF payload starts. Kept
 /// as a constant because the decoder still walks v1 files produced
 /// before the v2 bump.
@@ -96,12 +108,19 @@ pub const HEADER_BYTES_V1: usize = 44;
 /// Bytes the v2 header occupies, before the IVF payload starts. v2
 /// adds two `i64` UTC timestamps at offsets 44 and 52.
 pub const HEADER_BYTES_V2: usize = 60;
-/// Bytes the *current* header occupies. Always equal to the latest
-/// version's size.
-pub const HEADER_BYTES: usize = HEADER_BYTES_V2;
-/// Sentinel value for "the dataset's UTC time range is unknown" in
-/// the v2 header's `start_unix` / `end_unix` slots. Distinct from
-/// `0` (the actual Unix epoch) and `-1` (one second before epoch).
+/// Bytes the v3 *fixed* header occupies — identical to v2; v3 just
+/// appends a variable-length `i64`-per-frame timestamp array after it.
+pub const HEADER_BYTES_V3_FIXED: usize = 60;
+/// Bytes the *current* fixed header occupies. Always equal to the
+/// latest version's fixed-portion size; the per-frame timestamp array
+/// (v3+) extends the on-disk footprint by `frame_count × 8` bytes.
+pub const HEADER_BYTES: usize = HEADER_BYTES_V3_FIXED;
+/// Sentinel value for "this timestamp is unknown."
+///
+/// Used in the v2+ header's `start_unix` / `end_unix` slots, and in
+/// every entry of the v3 per-frame timestamp array when the source
+/// dataset doesn't carry a UTC anchor. Distinct from `0` (the actual
+/// Unix epoch) and `-1` (one second before epoch).
 pub const UNKNOWN_TIME_SENTINEL: i64 = i64::MIN;
 
 /// Quantization origin: physical value (m/s) that maps to pixel `0`.

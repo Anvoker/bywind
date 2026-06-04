@@ -173,21 +173,29 @@ pub fn decode<R: Read>(reader: R) -> Result<BakedWindMap, DecodeError> {
         ));
     }
 
+    let nt = header.nt as usize;
+    let t_step_seconds = header.t_step_seconds;
     Ok(BakedWindMap {
         grid,
         nx: header.nx as usize,
         ny: header.ny as usize,
-        nt: header.nt as usize,
+        nt,
         x_min: header.x_min,
         y_min: header.y_min,
         step: header.step,
-        t_step_seconds: header.t_step_seconds,
+        t_step_seconds,
         // `crossfade_seconds` is not part of the on-disk schema yet —
         // derive it from `t_step_seconds` using the same 5-frame rule
         // `TimedWindMap::new` applies. If we ever want per-map
         // customisation persisted across bakes, bump the on-disk
         // version and store it explicitly.
-        crossfade_seconds: 5.0 * header.t_step_seconds,
+        crossfade_seconds: 5.0 * t_step_seconds,
+        // Per-frame offsets also aren't persisted in the baked-codec
+        // schema yet; synthesize uniform offsets from t_step_seconds.
+        // Non-uniform offsets (gap-preserving) only survive across
+        // wind_av1 v3 round-trips, not baked-codec ones; bumping the
+        // baked-codec format to carry them is a follow-up.
+        t_frame_offsets: (0..nt).map(|i| i as f64 * t_step_seconds).collect(),
         coord_scale: header.coord_scale,
     })
 }

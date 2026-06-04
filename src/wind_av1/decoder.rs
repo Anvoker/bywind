@@ -15,7 +15,8 @@ use crate::{TimedWindMap, WeatherRow, WindMap};
 use super::ivf::IvfReader;
 use super::rav1d_wrap::{Decoder, DecoderError};
 use super::{
-    HEADER_BYTES_V1, HEADER_BYTES_V2, MAGIC, UNKNOWN_TIME_SENTINEL, dequantize, uv_to_sample,
+    HEADER_BYTES_V1, HEADER_BYTES_V2, HEADER_BYTES_V3_FIXED, MAGIC, UNKNOWN_TIME_SENTINEL,
+    dequantize, uv_to_sample,
 };
 
 #[derive(Debug)]
@@ -170,7 +171,13 @@ pub fn decode<R: Read>(reader: R) -> Result<TimedWindMap, DecodeError> {
             got: frames.len() as u32,
         });
     }
-    let mut map = TimedWindMap::new(frames, header.step_seconds);
+    // Always go through the explicit-offsets constructor so v3 files
+    // (which may carry non-uniform timing from gap-preserving fetches)
+    // survive round-trip. For v1/v2 we synthesised uniform offsets in
+    // `read_header`, so this path is equivalent to the old
+    // `TimedWindMap::new(frames, step_seconds)` for those files.
+    let mut map =
+        TimedWindMap::new_with_offsets(frames, header.step_seconds, header.frame_offsets);
     if let Some((s, e)) = header.time_range {
         map = map.with_time_range(s, e);
     }
@@ -186,11 +193,18 @@ struct Header {
     ny: u32,
     frame_count: u32,
     step_seconds: f32,
-    /// `Some` only when the file is v2 *and* both endpoints round-trip
+    /// `Some` only when the file is v2+ *and* both endpoints round-trip
     /// to valid `chrono::DateTime<Utc>` values (i.e. neither is the
     /// `UNKNOWN_TIME_SENTINEL` and both are in chrono's representable
     /// range). v1 files always decode to `None` here.
     time_range: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
+    /// Per-frame seconds-from-frame-0 offsets. Always populated:
+    /// - v1/v2: synthesised from `step_seconds` (uniform).
+    /// - v3: read from the per-frame Unix-seconds array immediately
+    ///   after the v2-shaped fixed header; offsets relative to the
+    ///   first frame so the same Vec<f64> shape works regardless of
+    ///   whether a UTC anchor is known.
+    frame_offsets: Vec<f64>,
 }
 
 fn read_u32_le(buf: &[u8], offset: usize) -> u32 {
@@ -218,22 +232,23 @@ fn read_i64_le(buf: &[u8], offset: usize) -> i64 {
 }
 
 fn read_header<R: Read>(reader: &mut R) -> Result<Header, DecodeError> {
-    // Read the v1-sized prefix first; v2 just adds two `i64` slots at
-    // offsets 44 and 52. Branching on `version` lets us walk both
-    // file shapes from a single decoder.
-    let mut buf = [0u8; HEADER_BYTES_V2];
+    // Read the v1-sized prefix first; v2/v3 just add fixed-position
+    // fields at offsets 44 / 52 (and v3 follows with a variable-length
+    // per-frame timestamp array). Branching on `version` lets us walk
+    // every supported shape from a single decoder.
+    let mut buf = [0u8; HEADER_BYTES_V3_FIXED];
     reader.read_exact(&mut buf[..HEADER_BYTES_V1])?;
     if buf[0..8] != MAGIC {
         return Err(DecodeError::BadMagic);
     }
     let version = read_u32_le(&buf, 8);
-    let time_range = match version {
-        1 => None,
-        2 => {
+    let (time_range, has_frame_times_block) = match version {
+        1 => (None, false),
+        2 | 3 => {
             reader.read_exact(&mut buf[HEADER_BYTES_V1..HEADER_BYTES_V2])?;
             let start_unix = read_i64_le(&buf, 44);
             let end_unix = read_i64_le(&buf, 52);
-            decode_time_range(start_unix, end_unix)
+            (decode_time_range(start_unix, end_unix), version == 3)
         }
         _ => return Err(DecodeError::UnsupportedVersion(version)),
     };
@@ -256,6 +271,31 @@ fn read_header<R: Read>(reader: &mut R) -> Result<Header, DecodeError> {
     if !step_lon.is_finite() || !step_lat.is_finite() || step_lon <= 0.0 || step_lat <= 0.0 {
         return Err(DecodeError::BadStep { step_lon, step_lat });
     }
+    let uniform_offsets = || {
+        // v1 / v2 (and the v3 fallback when the per-frame block is
+        // poisoned by an unknown-time sentinel): synthesize uniform
+        // offsets so downstream code (TimedWindMap, BakedWindMap,
+        // query) sees the same shape regardless of source version.
+        (0..frame_count as usize)
+            .map(|i| i as f64 * f64::from(step_seconds))
+            .collect::<Vec<f64>>()
+    };
+    let frame_offsets = if has_frame_times_block {
+        let raw_times = read_v3_frame_times_raw(reader, frame_count)?;
+        if raw_times.contains(&UNKNOWN_TIME_SENTINEL) {
+            // A single sentinel poisons the relative-offset
+            // calculation — fall back to uniform from step_seconds.
+            // The only thing lost is per-frame absolute timing for
+            // synthetic data, which doesn't have meaningful timing
+            // anyway; the relative spacing stays uniform.
+            uniform_offsets()
+        } else {
+            let base = raw_times[0];
+            raw_times.into_iter().map(|t| (t - base) as f64).collect()
+        }
+    } else {
+        uniform_offsets()
+    };
     Ok(Header {
         origin_lon,
         origin_lat,
@@ -266,7 +306,36 @@ fn read_header<R: Read>(reader: &mut R) -> Result<Header, DecodeError> {
         frame_count,
         step_seconds,
         time_range,
+        frame_offsets,
     })
+}
+
+/// Read the v3 per-frame timestamp block (`frame_count × i64` Unix
+/// seconds) and return the raw values. Caller decides what to do
+/// with a sentinel-poisoned block (the current policy is "fall back
+/// to uniform from `step_seconds`", in [`read_header`]).
+fn read_v3_frame_times_raw<R: Read>(
+    reader: &mut R,
+    frame_count: u32,
+) -> Result<Vec<i64>, DecodeError> {
+    let n = frame_count as usize;
+    let mut raw = vec![0u8; n * std::mem::size_of::<i64>()];
+    reader.read_exact(&mut raw)?;
+    let mut times = Vec::with_capacity(n);
+    for chunk in raw.chunks_exact(std::mem::size_of::<i64>()) {
+        // Unreachable in practice: `chunks_exact(8)` guarantees the
+        // slice is exactly 8 bytes. Surfaced via `Result` instead of
+        // `expect` so the function stays fallible-shaped end-to-end
+        // (clippy nags on `expect` inside `Result`-returning code).
+        let arr: [u8; 8] =
+            chunk.try_into().map_err(|err: std::array::TryFromSliceError| {
+                DecodeError::Io(io::Error::other(format!(
+                    "v3 frame-times: {err} (unreachable; chunks_exact(8) should guarantee 8 bytes)",
+                )))
+            })?;
+        times.push(i64::from_le_bytes(arr));
+    }
+    Ok(times)
 }
 
 /// Convert a pair of Unix-seconds slots from the v2 header into a

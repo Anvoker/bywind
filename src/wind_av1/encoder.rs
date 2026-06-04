@@ -193,8 +193,40 @@ pub fn encode<W: Write>(
         start_unix,
         end_unix,
     )?;
+    // v3 extension: absolute Unix-seconds per frame. When the source
+    // has a UTC anchor, write `start + offsets[i]`; when it doesn't,
+    // write the sentinel so the decoder knows the per-frame absolute
+    // time is unknown. The relative spacing in `offsets[]` is
+    // preserved either way, which is what the gap-preservation
+    // story actually depends on.
+    write_frame_times(&mut writer, map, start_unix)?;
 
     encode_payload(&mut writer, frames, &layout, frame_count_u32, &params)
+}
+
+/// Append the v3 per-frame timestamp array to `writer` immediately
+/// after the v2-shaped fixed header. One `i64` LE per frame.
+///
+/// When `start_unix` is the unknown-time sentinel, write the sentinel
+/// for every frame — relative spacing is still preserved via
+/// `step_seconds` + the v3 *presence* of this section (callers
+/// distinguish v3 from v2 by version, not by sentinel scan).
+fn write_frame_times<W: Write>(
+    writer: &mut W,
+    map: &TimedWindMap,
+    start_unix: i64,
+) -> io::Result<()> {
+    let offsets = map.frame_offsets();
+    let mut buf = Vec::with_capacity(offsets.len() * std::mem::size_of::<i64>());
+    for off in offsets {
+        let t = if start_unix == UNKNOWN_TIME_SENTINEL {
+            UNKNOWN_TIME_SENTINEL
+        } else {
+            start_unix.saturating_add(off.round() as i64)
+        };
+        buf.extend_from_slice(&t.to_le_bytes());
+    }
+    writer.write_all(&buf)
 }
 
 fn encode_payload<W: Write>(

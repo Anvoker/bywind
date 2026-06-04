@@ -489,6 +489,31 @@ fn reorder_to_grid(rows: Vec<WeatherRow>, layout: &GridLayout) -> Vec<WeatherRow
 /// any cadence the rule yields a 5-frame blend, scaling sensibly.
 const DEFAULT_CROSSFADE_FRAMES: f32 = 5.0;
 
+/// Build `[0, step, 2*step, …, (n-1)*step]` as `f64` seconds. The
+/// loop multiplies the integer index by `step` rather than
+/// accumulating to avoid `step + step + …` drift past long sequences.
+fn uniform_offsets(n: usize, step: f64) -> Vec<f64> {
+    (0..n).map(|i| i as f64 * step).collect()
+}
+
+/// Find the lower index of the bracketing pair around `t` in a
+/// strictly-increasing offset array — i.e. the largest `i` such that
+/// `offsets[i] <= t`. Saturates at `0` for `t < offsets[0]` and at
+/// `offsets.len() - 1` for `t > offsets.last()`.
+///
+/// Caller is expected to clamp the result to `n - 1` for upper-edge
+/// safety (the `hi = lo + 1` step uses that pattern). O(log N) via
+/// `partition_point`.
+fn bracket_lower(offsets: &[f64], t: f64) -> usize {
+    debug_assert!(!offsets.is_empty(), "bracket_lower called on empty offsets");
+    // `partition_point` returns the count of leading entries that
+    // satisfy the predicate. With `o <= t` that count is one past the
+    // last `o <= t`, so subtract 1 (saturating at 0).
+    offsets
+        .partition_point(|o| *o <= t)
+        .saturating_sub(1)
+}
+
 /// Linear blend of two [`WindSample`]s. Speed is interpolated
 /// directly; direction is interpolated via sin/cos so the 0°/360°
 /// boundary doesn't cause a discontinuity (the canonical trick for
@@ -512,6 +537,13 @@ fn blend_samples(lo: &WindSample, hi: &WindSample, alpha: f32) -> WindSample {
 /// rather than snapping back to frame 0.
 #[derive(Clone)]
 pub struct TimedWindMap {
+    /// Typical spacing between frames in seconds. For uniform datasets
+    /// this is the true cadence; for non-uniform datasets (e.g. a
+    /// fetch that hit a 404 on one frame) it's the cadence the dataset
+    /// *meant* to have. The authoritative per-frame timing lives in
+    /// [`Self::frame_offsets`]; `step_seconds` is kept as a derived
+    /// summary (for the crossfade default, the v2 wcav header, and
+    /// the GUI's Time section).
     step_seconds: f32,
     /// Length of the synthesised blend window between the last frame and
     /// the looped first frame. See `Self::query` for the math. Defaults
@@ -524,6 +556,15 @@ pub struct TimedWindMap {
     /// without it. When `Some`, `.0 ≤ .1` and consumers can format
     /// them for display.
     time_range: Option<(chrono::DateTime<chrono::Utc>, chrono::DateTime<chrono::Utc>)>,
+    /// Seconds-from-frame-0 for every frame. Always length-matched to
+    /// `frames`, always starts at `0.0`, always strictly increasing.
+    /// For uniform datasets `frame_offsets[i] == i * step_seconds`
+    /// (within f64 rounding). When a fetch skipped a frame, the
+    /// downstream gap is preserved here: the affected `offsets[k+1] -
+    /// offsets[k]` is `2 × step` instead of `step`, so the query layer
+    /// brackets correctly across the skip instead of silently shifting
+    /// every subsequent frame's implicit timestamp by one slot.
+    frame_offsets: Vec<f64>,
     frames: Vec<WindMap>,
 }
 
@@ -537,10 +578,63 @@ impl TimedWindMap {
             step_seconds > 0.0,
             "TimedWindMap step_seconds must be > 0, got {step_seconds}"
         );
+        let frame_offsets = uniform_offsets(frames.len(), f64::from(step_seconds));
         Self {
             step_seconds,
             crossfade_seconds: DEFAULT_CROSSFADE_FRAMES * step_seconds,
             time_range: None,
+            frame_offsets,
+            frames,
+        }
+    }
+
+    /// Construct with explicit per-frame offsets (seconds from frame 0).
+    /// Use when the source data has known gaps — e.g. a GEFS fetch
+    /// where one forecast hour 404'd. The `step_seconds` parameter
+    /// records the *intended* cadence (used for the crossfade default
+    /// and the wcav v2 header field); the actual frame timing lives in
+    /// `offsets`.
+    ///
+    /// # Panics
+    /// Panics if `offsets.len() != frames.len()`, if `offsets[0]` is
+    /// not exactly `0.0`, or if the sequence isn't strictly
+    /// increasing — every consumer of `frame_offsets` relies on those
+    /// invariants.
+    pub fn new_with_offsets(
+        frames: Vec<WindMap>,
+        step_seconds: f32,
+        offsets: Vec<f64>,
+    ) -> Self {
+        assert!(!frames.is_empty(), "TimedWindMap must have at least one frame");
+        assert!(
+            step_seconds > 0.0,
+            "TimedWindMap step_seconds must be > 0, got {step_seconds}",
+        );
+        assert_eq!(
+            frames.len(),
+            offsets.len(),
+            "frame_offsets length ({}) must match frames length ({})",
+            offsets.len(),
+            frames.len(),
+        );
+        assert!(
+            offsets[0] == 0.0,
+            "frame_offsets[0] must be exactly 0.0 (got {})",
+            offsets[0],
+        );
+        for w in offsets.windows(2) {
+            assert!(
+                w[0] < w[1],
+                "frame_offsets must be strictly increasing (got {} >= {})",
+                w[0],
+                w[1],
+            );
+        }
+        Self {
+            step_seconds,
+            crossfade_seconds: DEFAULT_CROSSFADE_FRAMES * step_seconds,
+            time_range: None,
+            frame_offsets: offsets,
             frames,
         }
     }
@@ -577,8 +671,17 @@ impl TimedWindMap {
             return;
         }
         self.frames.truncate(n);
+        // `frame_offsets` is length-matched to `frames`; keep them in
+        // step. The remaining offsets retain their original values
+        // (relative to frame 0), so a non-uniform dataset stays
+        // non-uniform after truncation.
+        self.frame_offsets.truncate(n);
         if let Some((start, _)) = self.time_range {
-            let last_offset_secs = (n - 1) as f64 * f64::from(self.step_seconds);
+            // The new last-frame timestamp is `start + last_offset`,
+            // where `last_offset` is the new last entry of
+            // `frame_offsets` — which for non-uniform data may differ
+            // from `(n - 1) * step_seconds`.
+            let last_offset_secs = self.frame_offsets[n - 1];
             let last_offset = chrono::Duration::milliseconds((last_offset_secs * 1000.0) as i64);
             self.time_range = Some((start, start + last_offset));
         }
@@ -614,6 +717,16 @@ impl TimedWindMap {
     /// Length of the wrap-crossfade window in seconds (see [`Self::query`]).
     pub fn crossfade_seconds(&self) -> f32 {
         self.crossfade_seconds
+    }
+
+    /// Seconds-from-frame-0 for every frame. Length always equals
+    /// [`Self::frame_count`]; first element is always `0.0`; entries
+    /// are strictly increasing. For uniform datasets the slice equals
+    /// `[0, step, 2*step, …]`; for non-uniform (e.g. a fetch that
+    /// missed one frame) the gap shows up as a larger inter-element
+    /// diff at the affected index.
+    pub fn frame_offsets(&self) -> &[f64] {
+        &self.frame_offsets
     }
 
     /// Length of one looped cycle in seconds: data extent
@@ -745,15 +858,26 @@ impl TimedWindMap {
         self.step_seconds
     }
 
+    /// Seconds spanned by the data: the last frame's offset relative
+    /// to frame 0. For uniform datasets that's `(N-1) * step_seconds`;
+    /// for non-uniform (gap-preserving) datasets it reflects the
+    /// actual last-frame timestamp.
     pub fn duration_seconds(&self) -> f32 {
-        self.frames.len().saturating_sub(1) as f32 * self.step_seconds
+        // `frame_offsets` is non-empty (`new` requires ≥ 1 frame).
+        self.frame_offsets
+            .last()
+            .copied()
+            .unwrap_or(0.0) as f32
     }
 
     /// Flatten to a list of `(x, y, t_seconds, sample)` rows, ordered frame by frame.
     pub fn to_timed_rows(&self) -> Vec<TimedWeatherRow> {
         let mut out = Vec::with_capacity(self.frames.iter().map(|f| f.rows().len()).sum());
         for (k, frame) in self.frames.iter().enumerate() {
-            let t = k as f32 * self.step_seconds;
+            // Use the per-frame offset rather than `k * step_seconds`
+            // so non-uniform datasets (gaps preserved) flatten with
+            // their true timestamps.
+            let t = self.frame_offsets[k] as f32;
             for row in frame.rows() {
                 out.push(TimedWeatherRow {
                     lon: row.lon,
@@ -799,14 +923,22 @@ impl TimedWindMap {
         };
 
         let (lo_idx, hi_idx, alpha) = if t_mod <= data_end {
-            // Inside the data: bracketing frames are `floor(t/step)` and
-            // its successor. Clamp the upper index so the data-end edge
-            // (where `frame_idx_f` lands exactly on `n - 1`) still picks
-            // a valid frame.
-            let frame_idx_f = t_mod / self.step_seconds;
-            let lo = (frame_idx_f.floor() as usize).min(n - 1);
+            // Inside the data: binary-search `frame_offsets` for the
+            // bracketing pair. For uniform datasets this finds the
+            // same `(floor(t/step), floor+1)` pair the old division
+            // produced; for non-uniform (a fetch that hit a gap) it
+            // brackets across the gap, so the blend correctly spans
+            // the missing frame's slot.
+            let t_mod_f = f64::from(t_mod);
+            let lo = bracket_lower(&self.frame_offsets, t_mod_f).min(n - 1);
             let hi = (lo + 1).min(n - 1);
-            (lo, hi, frame_idx_f - lo as f32)
+            let span = self.frame_offsets[hi] - self.frame_offsets[lo];
+            let alpha = if span > 0.0 {
+                ((t_mod_f - self.frame_offsets[lo]) / span) as f32
+            } else {
+                0.0
+            };
+            (lo, hi, alpha)
         } else {
             // In the crossfade tail: linearly blend frame N-1 → frame 0
             // across `crossfade_seconds`. `alpha = 0` at `t_mod =
@@ -896,14 +1028,19 @@ pub struct BakedWindMap {
     pub(crate) y_min: f64,
     pub(crate) step: f64,
     pub(crate) t_step_seconds: f64,
-    /// Length of the wrap-crossfade window. Routes past `(nt-1) ·
-    /// t_step_seconds` blend frame N-1 → frame 0 over this many
-    /// seconds instead of snapping in one step. Defaults to
-    /// `DEFAULT_CROSSFADE_FRAMES × t_step_seconds`; populated from the
-    /// source [`TimedWindMap`] when baking and from `t_step_seconds`
-    /// alone when decoding (`baked_codec` doesn't carry the value on
-    /// disk yet).
+    /// Length of the wrap-crossfade window. Routes past
+    /// `t_frame_offsets.last()` blend frame N-1 → frame 0 over this
+    /// many seconds instead of snapping in one step. Defaults to
+    /// `DEFAULT_CROSSFADE_FRAMES × t_step_seconds`; populated from
+    /// the source [`TimedWindMap`] when baking and from
+    /// `t_step_seconds` alone when decoding via `baked_codec`.
     pub(crate) crossfade_seconds: f64,
+    /// Seconds-from-frame-0 for every baked frame. Length == `nt`,
+    /// strictly increasing, first element is `0.0`. Mirrors
+    /// [`TimedWindMap::frame_offsets`] from the source map so the
+    /// bake preserves non-uniform timing (gaps) for downstream search
+    /// queries. For uniform datasets this is `[0, t_step, 2*t_step, …]`.
+    pub(crate) t_frame_offsets: Vec<f64>,
     pub(crate) coord_scale: f64,
 }
 
@@ -1018,6 +1155,11 @@ impl BakedWindMap {
             // (BakedWindMap) agree on what happens at the time-axis
             // wrap.
             crossfade_seconds: f64::from(map.crossfade_seconds()),
+            // Preserve the source's per-frame timing — for non-uniform
+            // datasets this is the whole point of the bake step
+            // retaining gap information rather than collapsing back
+            // to a uniform step.
+            t_frame_offsets: map.frame_offsets().to_vec(),
             coord_scale: bounds.coord_scale,
         }
     }
@@ -1072,10 +1214,10 @@ impl WindSource for BakedWindMap {
             return self.grid[base];
         }
         // Same crossfade rule TimedWindMap::query uses: `t_mod` lands
-        // in either the data span `[0, (nt-1)·step]` or the crossfade
-        // tail `((nt-1)·step, cycle]`. The cycle accounts for the
-        // crossfade window so consecutive loops don't snap.
-        let data_end = (nt as f64 - 1.0) * self.t_step_seconds;
+        // in either the data span `[0, t_frame_offsets.last()]` or
+        // the crossfade tail. The cycle accounts for the crossfade
+        // window so consecutive loops don't snap.
+        let data_end = *self.t_frame_offsets.last().unwrap_or(&0.0);
         let cycle = data_end + self.crossfade_seconds;
         let t_mod = if cycle > 0.0 {
             t.rem_euclid(cycle)
@@ -1084,11 +1226,22 @@ impl WindSource for BakedWindMap {
         };
 
         let (it, it_hi, alpha) = if t_mod <= data_end {
-            let t_idx_f = t_mod / self.t_step_seconds;
-            let it_floor = t_idx_f.floor();
-            let it = (it_floor as i64).clamp(0, (nt - 1) as i64) as usize;
+            // Binary-search the offsets for the bracketing pair. For
+            // uniform datasets this finds the same frame indices the
+            // old `t / t_step_seconds` division produced; for
+            // non-uniform datasets (one frame missing from a fetch)
+            // it brackets across the gap so the blend correctly
+            // spans the wider interval rather than silently shifting
+            // every subsequent frame's effective time.
+            let it = bracket_lower(&self.t_frame_offsets, t_mod).min(nt - 1);
             let it_hi = (it + 1).min(nt - 1);
-            (it, it_hi, t_idx_f - it_floor)
+            let span = self.t_frame_offsets[it_hi] - self.t_frame_offsets[it];
+            let alpha = if span > 0.0 {
+                (t_mod - self.t_frame_offsets[it]) / span
+            } else {
+                0.0
+            };
+            (it, it_hi, alpha)
         } else {
             // Crossfade tail: blend frame nt-1 → frame 0.
             let alpha = (t_mod - data_end) / self.crossfade_seconds;
@@ -1179,6 +1332,45 @@ mod crossfade_tests {
         // Direction blends sin/cos: 0° (N) and 90° (E) → 45° (NE).
         let wrapped = ((s.direction - 45.0 + 540.0) % 360.0) - 180.0;
         assert!(wrapped.abs() < 1e-3, "direction = {}", s.direction);
+    }
+
+    /// A non-uniform map (frame 1 is offset 2× the step — simulating a
+    /// gap-preserving fetch) brackets correctly across the wider
+    /// interval. The blend at the synthetic midpoint should be 50/50,
+    /// landing the same wind as querying the uniform fixture at its
+    /// natural midpoint — proving the binary-search bracketing reads
+    /// the true offsets rather than the implicit `i * step` pattern.
+    #[test]
+    fn non_uniform_offsets_bracket_across_gap() {
+        let row = |speed, direction| {
+            vec![WeatherRow {
+                lon: 0.0,
+                lat: 0.0,
+                sample: WindSample { speed, direction },
+            }]
+        };
+        let frames = vec![WindMap::new(row(10.0, 0.0)), WindMap::new(row(20.0, 90.0))];
+        // Frame 0 at offset 0, frame 1 at offset 2 × 3600 s (one slot
+        // skipped). A query midway between them is at offset 3600 s,
+        // which under uniform `step=3600` would have landed exactly on
+        // frame 1 — but under the actual offsets it's the 50/50 blend
+        // point of the 7200-second span.
+        let map = TimedWindMap::new_with_offsets(frames, 3600.0, vec![0.0, 7200.0]);
+        let mid = map.query(0.0, 0.0, 3600.0);
+        assert!((mid.speed - 15.0).abs() < 1e-3, "speed = {}", mid.speed);
+        let wrapped = ((mid.direction - 45.0 + 540.0) % 360.0) - 180.0;
+        assert!(wrapped.abs() < 1e-3, "direction = {}", mid.direction);
+        // At the *implicit* uniform-step point (frame 1's uniform-
+        // synthesized slot), the actual frame 1 hasn't arrived yet —
+        // we're 25% of the way into the doubled interval. The blend
+        // should be 25/75 frame_0 : frame_1, not 100% frame_1.
+        let quarter = map.query(0.0, 0.0, 1800.0);
+        let expected_speed = 10.0 * 0.75 + 20.0 * 0.25;
+        assert!(
+            (quarter.speed - expected_speed).abs() < 1e-3,
+            "speed at quarter = {}, expected ~{expected_speed}",
+            quarter.speed,
+        );
     }
 
     #[test]
