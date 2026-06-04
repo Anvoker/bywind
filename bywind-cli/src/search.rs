@@ -22,10 +22,11 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context as _, Result, anyhow};
 use bywind::{
-    BakedWindMap, BenchmarkRoute, BoatConfig, EnsembleAssessment, LonLatBbox, MapBounds,
-    RouteBounds, RouteEvolution, SavedSolution, SearchConfig, SearchResult, SearchWeights,
-    SegmentMetrics, WaypointCount, baked_codec, derive_route_bbox, format_bbox_flag,
-    gbest_segment_metrics, landmass_grid, run_search_blocking, run_search_blocking_with_baked,
+    BakedWindMap, BenchmarkRoute, BoatConfig, EnsembleMode, EnsembleSpread, LonLatBbox,
+    MapBounds, RouteBounds, RouteEvolution, SavedSolution, SearchConfig, SearchResult,
+    SearchWeights, SegmentMetrics, WaypointCount, baked_codec, derive_route_bbox,
+    format_bbox_flag, gbest_segment_metrics, landmass_grid, run_search_blocking,
+    run_search_blocking_with_baked,
 };
 
 use bywind::fmt::{format_duration_breakdown, format_fuel_auto, format_land_km, format_pso_delta};
@@ -119,7 +120,7 @@ pub struct SearchArgs {
     /// exclusive with `<MAP>` / `--load-baked`.
     #[arg(long, value_name = "PATH", conflicts_with_all = ["save_baked", "load_baked"])]
     pub ensemble: Option<PathBuf>,
-    /// Robust-fitness aggregation mode when `--ensemble` is set.
+    /// Ensemble aggregation mode when `--ensemble` is set.
     /// `full` runs the K-fold robust objective (currently mean); `fast-mean`
     /// pre-computes a single mean wind map and runs the existing
     /// single-deterministic search against it. `fast-mean` is much faster
@@ -129,9 +130,21 @@ pub struct SearchArgs {
         long,
         value_name = "MODE",
         default_value = "full",
-        value_parser = clap::builder::PossibleValuesParser::new(["full", "fast-mean"]),
+        value_parser = parse_ensemble_mode,
     )]
-    pub robust_mode: String,
+    pub ensemble_mode: EnsembleMode,
+}
+
+/// clap value parser for [`EnsembleMode`] — accepts `"full"` and
+/// `"fast-mean"`, matching the kebab-case serde rename on the type.
+fn parse_ensemble_mode(s: &str) -> Result<EnsembleMode, String> {
+    match s {
+        "full" => Ok(EnsembleMode::Full),
+        "fast-mean" => Ok(EnsembleMode::FastMean),
+        other => Err(format!(
+            "expected one of: full, fast-mean (got `{other}`)",
+        )),
+    }
 }
 
 pub fn run(args: &SearchArgs) -> Result<(), AppError> {
@@ -210,7 +223,7 @@ pub fn run(args: &SearchArgs) -> Result<(), AppError> {
             &search_cfg,
             weights,
             args.save_baked.as_deref(),
-            args.robust_mode.as_str(),
+            args.ensemble_mode,
         )
     })?;
     let total_dur = total_start.elapsed();
@@ -458,7 +471,7 @@ fn execute_search(
     search_cfg: &SearchConfig,
     weights: SearchWeights,
     save_baked: Option<&Path>,
-    robust_mode: &str,
+    ensemble_mode: EnsembleMode,
 ) -> Result<SearchResult, AppError> {
     match source {
         WindSource::Cached(baked) => run_search_blocking_with_baked(
@@ -504,12 +517,17 @@ fn execute_search(
                 "  baked in {:.2}s",
                 bake_start.elapsed().as_secs_f64(),
             );
-            let wind_input = if robust_mode == "fast-mean" {
-                eprintln!("using fast-mean mode (single-deterministic against ensemble mean)");
-                bywind::WindInput::ensemble_fast_mean(baked_ensemble)
-            } else {
-                eprintln!("using full K-fold robust fitness (objective: mean)");
-                bywind::WindInput::ensemble_full(baked_ensemble)
+            let wind_input = match ensemble_mode {
+                EnsembleMode::FastMean => {
+                    eprintln!(
+                        "using fast-mean mode (single-deterministic against ensemble mean)",
+                    );
+                    bywind::WindInput::ensemble_fast_mean(baked_ensemble)
+                }
+                EnsembleMode::Full => {
+                    eprintln!("using full K-fold robust fitness (objective: mean)");
+                    bywind::WindInput::ensemble_full(baked_ensemble)
+                }
             };
             run_search_blocking_with_baked(
                 wind_input,
@@ -683,7 +701,7 @@ fn print_summary(
     saved: &SavedSolution,
     segment_stats: &[SegmentMetrics],
     benchmark: Option<&BenchmarkRoute>,
-    ensemble: Option<&EnsembleAssessment>,
+    ensemble: Option<&EnsembleSpread>,
     bake_dur: std::time::Duration,
     search_dur: std::time::Duration,
     total_dur: std::time::Duration,

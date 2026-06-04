@@ -137,7 +137,7 @@ fn ensemble_full_k_three_produces_finite_fitness() {
 }
 
 #[test]
-fn ensemble_assessment_time_varies_across_distinct_members() {
+fn ensemble_spread_time_varies_across_distinct_members() {
     // Regression guard: per-member `MemberMetrics.time_s` must reflect
     // a per-member time-reopt against that member's wind, not a sum of
     // the converged gbest path's segment durations (which would be
@@ -153,12 +153,12 @@ fn ensemble_assessment_time_varies_across_distinct_members() {
     let ensemble = BakedEnsembleWindMap::from_members(baked, names);
 
     let result = run_with_wind(WindInput::ensemble_full(ensemble), bounds);
-    let assessment = result
+    let spread = result
         .ensemble
         .as_ref()
-        .expect("Full mode must populate the ensemble assessment");
-    assert_eq!(assessment.per_member.len(), 3);
-    let times: Vec<f64> = assessment.per_member.iter().map(|m| m.time_s).collect();
+        .expect("Full mode must populate the ensemble spread");
+    assert_eq!(spread.per_member.len(), 3);
+    let times: Vec<f64> = spread.per_member.iter().map(|m| m.time_s).collect();
     // At least one pair must differ: distinct synthetic winds under
     // per-member time-reopt cannot produce bit-identical schedules.
     let any_differ = times.iter().any(|t| (*t - times[0]).abs() > 1e-9);

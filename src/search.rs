@@ -10,6 +10,7 @@ use swarmkit_sailing::{
     weighted_fitness,
 };
 
+use crate::config::EnsembleMode;
 use crate::ensemble::BakedEnsembleWindMap;
 use crate::landmass::{landmass_grid_at_resolution, landmass_grid_two_tier};
 use crate::route::{BenchmarkRoute, RouteEvolution, WaypointCount, debug_assert_path_no_nans};
@@ -33,10 +34,11 @@ pub struct SearchResult {
     pub search_duration: std::time::Duration,
     /// `Some` for ensemble searches: K per-member evaluations of the
     /// converged gbest path. `None` for single-deterministic.
-    pub ensemble: Option<EnsembleAssessment>,
+    pub ensemble: Option<EnsembleSpread>,
 }
 
-/// Per-ensemble-member assessment of the converged gbest path.
+/// Per-member spread of the converged gbest path's metrics — one path,
+/// K winds.
 ///
 /// For each member the gbest `xy` is held fixed and the segment-time
 /// array `t` is re-optimised against that member's wind via
@@ -50,14 +52,14 @@ pub struct SearchResult {
 /// shares `time_s = sum(gbest.t)` and the time axis of the spread
 /// collapses to a single value.
 #[derive(Clone, Debug)]
-pub struct EnsembleAssessment {
+pub struct EnsembleSpread {
     pub per_member: Vec<MemberMetrics>,
 }
 
 /// One ensemble member's optimal-schedule evaluation of the converged
 /// gbest route.
 ///
-/// See [`EnsembleAssessment`] for the reopt protocol. `land_m` is
+/// See [`EnsembleSpread`] for the reopt protocol. `land_m` is
 /// shared across members (wind-independent) but stored per-member for
 /// symmetry with the aggregate display layer.
 #[derive(Clone, Debug)]
@@ -82,7 +84,7 @@ pub struct MemberMetrics {
     pub fitness: f64,
 }
 
-impl EnsembleAssessment {
+impl EnsembleSpread {
     /// `(mean, min, max, stddev)` of `field` across members.
     /// Returns `(NaN, NaN, NaN, NaN)` for an empty ensemble (which
     /// shouldn't happen — `Self` is constructed with K ≥ 1).
@@ -267,21 +269,6 @@ pub enum WindInput {
         mean: BakedWindMap,
         mode: EnsembleMode,
     },
-}
-
-/// Aggregation strategy for ensemble fitness.
-#[derive(Copy, Clone, Debug, PartialEq, Eq)]
-pub enum EnsembleMode {
-    /// `K`-fold per-particle fitness reduced via [`RobustObjective`]
-    /// (currently `Mean`). Benchmark route uses the precomputed mean
-    /// wind for the time-PSO refinement (cheaper than K-fold inside
-    /// the inner loop; documents the bench as "mean-wind reference").
-    Full,
-    /// Skip the K-fold loop entirely; run the existing single-
-    /// deterministic search against the precomputed mean wind map.
-    /// `E[f(x, wind)] ≠ f(x, E[wind])` in general but for linear-
-    /// polar regimes the gap is typically <1%. Massive speedup.
-    FastMean,
 }
 
 impl WindInput {
@@ -535,7 +522,7 @@ fn run_search_inner_ensemble<LS: LandmassSource>(
     land: &LS,
     search_start: std::time::Instant,
 ) -> Result<SearchResult, SearchError> {
-    let (route_evolution, boat, benchmark, best_fit, ensemble_assessment) =
+    let (route_evolution, boat, benchmark, best_fit, ensemble_spread) =
         waypoint_match!(waypoint_count, N, wrap, {
         let ensemble_fit_calc = EnsembleSailboatFitCalc::<N, _, _, _> {
             time_weight: weights.time_weight,
@@ -597,9 +584,10 @@ fn run_search_inner_ensemble<LS: LandmassSource>(
             &bench_fit_calc,
             search_settings,
         );
-        // Per-member assessment of the converged gbest path: hold the
-        // spatial geometry `xy` fixed and time-reopt `t` against each
-        // member's wind, then walk the reopt'd path for `(time, fuel)`.
+        // Per-member spread of the converged gbest path's metrics: hold
+        // the spatial geometry `xy` fixed and time-reopt `t` against
+        // each member's wind, then walk the reopt'd path for `(time,
+        // fuel)`.
         // Without per-member time-reopt the time axis is constant —
         // `walk_segments_against_wind` integrates segment durations
         // from `path.t`, not the wind, so a fixed-path replay gives
@@ -651,13 +639,13 @@ fn run_search_inner_ensemble<LS: LandmassSource>(
                 }
             })
             .collect();
-        let ensemble_assessment = EnsembleAssessment { per_member };
+        let ensemble_spread = EnsembleSpread { per_member };
         (
             wrap(evolution),
             ship,
             benchmark,
             gbest.best_fit,
-            ensemble_assessment,
+            ensemble_spread,
         )
     });
     if !best_fit.is_finite() {
@@ -672,7 +660,7 @@ fn run_search_inner_ensemble<LS: LandmassSource>(
         benchmark,
         bake_duration: std::time::Duration::ZERO,
         search_duration,
-        ensemble: Some(ensemble_assessment),
+        ensemble: Some(ensemble_spread),
     })
 }
 

@@ -1,14 +1,14 @@
 use std::sync::mpsc::{Receiver, TryRecvError};
 
 use bywind::{
-    BoatConfig, GenerateConfig, LonLatBbox, MapBounds, RobustMode, SearchConfig, SearchError,
+    BoatConfig, EnsembleMode, GenerateConfig, LonLatBbox, MapBounds, SearchConfig, SearchError,
     SearchResult, SearchWeights, TimedWindMap, WindInput, compute_segment_metrics,
     route_evolution_match, run_search_blocking, run_search_blocking_with_baked,
     run_time_reopt_blocking,
 };
 
 use crate::config::{EditorState, Tool, ViewState};
-use crate::search::{ReoptMsg, SearchOutputs, SoloMemberRun};
+use crate::search::{RealizationRun, ReoptMsg, SearchOutputs};
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
@@ -40,19 +40,19 @@ pub struct BywindApp {
     #[serde(skip)]
     pub(crate) reopt_job: AsyncJob<ReoptMsg>,
 
-    /// Background per-member solo-PSO cohort. Fired from the
-    /// "Run solo per member" button; on success its payload replaces
-    /// `outputs.solo_runs`. Independent of `search_job` so a main
-    /// search can run alongside (though the UI gates them sequentially
-    /// today to keep CPU contention predictable).
+    /// Background per-realization PSO cohort. Fired from the
+    /// "Run per realization" button; on success its payload replaces
+    /// `outputs.realization_runs`. Independent of `search_job` so a
+    /// main search can run alongside (though the UI gates them
+    /// sequentially today to keep CPU contention predictable).
     #[serde(skip)]
-    pub(crate) solo_job: AsyncJob<Result<Vec<SoloMemberRun>, SearchError>>,
+    pub(crate) realization_job: AsyncJob<Result<Vec<RealizationRun>, SearchError>>,
 
-    /// Wall-clock instant the running solo cohort started, mirroring
-    /// `search_started_at` so the button can show elapsed time while
-    /// the K-search loop is running.
+    /// Wall-clock instant the running realization cohort started,
+    /// mirroring `search_started_at` so the button can show elapsed
+    /// time while the K-search loop is running.
     #[serde(skip)]
-    pub(crate) solo_started_at: Option<std::time::Instant>,
+    pub(crate) realization_started_at: Option<std::time::Instant>,
 
     /// Background decoder for the embedded `wind_av1` sample dataset.
     /// Spawned at startup when `assets/sample_wind.wcav` was present at
@@ -98,8 +98,8 @@ impl Default for BywindApp {
             search_job: AsyncJob::default(),
             search_started_at: None,
             reopt_job: AsyncJob::default(),
-            solo_job: AsyncJob::default(),
-            solo_started_at: None,
+            realization_job: AsyncJob::default(),
+            realization_started_at: None,
             bundled_sample_job: AsyncJob::default(),
             #[cfg(not(target_arch = "wasm32"))]
             fetch_job: crate::fetch::FetchJob::default(),
@@ -262,7 +262,7 @@ impl BywindApp {
         search_settings.seed = Some(effective_seed);
         self.outputs.last_search_seed = Some(effective_seed);
         let ship = self.boat.to_boat();
-        let robust_mode = self.search.robust_mode;
+        let ensemble_mode = self.search.ensemble_mode;
         let (tx, rx) = std::sync::mpsc::channel();
 
         if let Some(ensemble_path) = ensemble_dispatch {
@@ -279,7 +279,7 @@ impl BywindApp {
                     weights,
                     sdf_resolution,
                     fine_sdf_resolution,
-                    robust_mode,
+                    ensemble_mode,
                 );
                 drop(tx.send(result));
                 ctx.request_repaint();
@@ -316,29 +316,29 @@ impl BywindApp {
         self.search_started_at = Some(std::time::Instant::now());
     }
 
-    /// Per-member solo PSO cohort. Runs K independent
-    /// single-deterministic searches, one per ensemble member, so the
-    /// user can see what alternate routes each member's wind would
-    /// produce — complement to the ensemble assessment, which only
-    /// scores the chosen gbest against each member. Requires
-    /// `ensemble_path` and a route bbox to be set; otherwise reports a
-    /// toast and bails. The K searches run sequentially in the worker
-    /// to keep CPU usage predictable (each search is already
-    /// internally rayon-parallel).
-    pub(crate) fn run_solo_per_member(&mut self, ctx: &egui::Context) {
-        if self.solo_job.is_running() {
+    /// Per-realization PSO cohort. Runs K independent
+    /// single-deterministic searches, one per ensemble member viewed
+    /// as a separate weather realization, so the user can see what
+    /// alternate routes each realization's wind would produce —
+    /// complement to the ensemble spread, which only scores the chosen
+    /// gbest against each member. Requires `ensemble_path` and a route
+    /// bbox to be set; otherwise reports a toast and bails. The K
+    /// searches run sequentially in the worker to keep CPU usage
+    /// predictable (each search is already internally rayon-parallel).
+    pub(crate) fn run_realizations(&mut self, ctx: &egui::Context) {
+        if self.realization_job.is_running() {
             return;
         }
         let Some(ensemble_path) = self.search.ensemble_path.clone() else {
             self.report_error(
-                "Solo per-member needs an ensemble dir set in Advanced Params.".to_owned(),
+                "Per-realization run needs an ensemble dir set in Advanced Params.".to_owned(),
             );
             return;
         };
         let Some(route_bbox) = self.editor.route_bbox else {
             self.report_error(
-                "Solo per-member needs a route bbox to size the bake. Draw one with \
-                 the Route Bounds tool, then click Run solo per member."
+                "Per-realization run needs a route bbox to size the bake. Draw one with \
+                 the Route Bounds tool, then click Run per realization."
                     .to_owned(),
             );
             return;
@@ -379,10 +379,11 @@ impl BywindApp {
             land_weight: self.search.land_weight,
         };
         // Resolve the seed up front like `run_search`. We then derive
-        // per-member seeds as `base + k` inside the worker so distinct
-        // members aren't initialised with the exact same swarm cloud —
-        // identical seeds would let two near-identical winds collapse
-        // to bit-identical routes, defeating the point of an overlay.
+        // per-realization seeds as `base + k` inside the worker so
+        // distinct realizations aren't initialised with the exact same
+        // swarm cloud — identical seeds would let two near-identical
+        // winds collapse to bit-identical routes, defeating the point
+        // of an overlay.
         let mut search_settings = self.search.to_search_settings();
         let base_seed = search_settings.seed.unwrap_or_else(rand::random);
         search_settings.seed = Some(base_seed);
@@ -390,7 +391,7 @@ impl BywindApp {
         let ctx = ctx.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let result = run_solo_per_member_search(
+            let result = run_realization_searches(
                 &ensemble_path,
                 bake_bounds,
                 route_bounds,
@@ -405,8 +406,8 @@ impl BywindApp {
             drop(tx.send(result));
             ctx.request_repaint();
         });
-        self.solo_job.set_running(rx);
-        self.solo_started_at = Some(std::time::Instant::now());
+        self.realization_job.set_running(rx);
+        self.realization_started_at = Some(std::time::Instant::now());
     }
 
     /// Re-run only the time PSO with the user-edited xy fixed. Each
@@ -572,12 +573,12 @@ impl eframe::App for BywindApp {
                     self.outputs.bake_duration = Some(bake_duration);
                     self.outputs.search_duration = Some(search_duration);
                     self.outputs.ensemble = ensemble;
-                    // Drop any prior solo cohort — it was scored
+                    // Drop any prior realization cohort — it was scored
                     // against the previous route bounds / endpoints
                     // and would draw stale routes over the new gbest.
-                    self.outputs.solo_runs.clear();
+                    self.outputs.realization_runs.clear();
                     // Reset the Summary selector — a stale
-                    // `SoloMember(k)` would point into a now-empty
+                    // `Realization(k)` would point into a now-empty
                     // cohort, and `Gbest` is the only thing that
                     // makes sense to show right after a new gbest.
                     self.outputs.summary_selection =
@@ -597,31 +598,31 @@ impl eframe::App for BywindApp {
             self.apply_reopt_result(&msg);
         }
 
-        // Solo per-member cohort lands as a `Vec<SoloMemberRun>` —
-        // assign wholesale, overwriting any prior cohort. Failures
-        // surface a toast and leave the previous cohort visible (same
-        // policy as the main search arm).
-        if let Some(result) = self.solo_job.poll() {
-            self.solo_started_at = None;
+        // Realization cohort lands as a `Vec<RealizationRun>` — assign
+        // wholesale, overwriting any prior cohort. Failures surface a
+        // toast and leave the previous cohort visible (same policy as
+        // the main search arm).
+        if let Some(result) = self.realization_job.poll() {
+            self.realization_started_at = None;
             match result {
                 Ok(runs) => {
-                    // Clamp a stale `SoloMember(k)` selection back to
+                    // Clamp a stale `Realization(k)` selection back to
                     // `Gbest` if the new cohort doesn't have a `k`-th
-                    // member. K typically matches across reruns, but
+                    // entry. K typically matches across reruns, but
                     // re-fetching the ensemble dir with a different
                     // member count would otherwise leave a dangling
                     // index pointing past the new vector's end.
-                    if let crate::search::SummarySelection::SoloMember(k) =
+                    if let crate::search::SummarySelection::Realization(k) =
                         self.outputs.summary_selection
                         && k >= runs.len()
                     {
                         self.outputs.summary_selection =
                             crate::search::SummarySelection::Gbest;
                     }
-                    self.outputs.solo_runs = runs;
+                    self.outputs.realization_runs = runs;
                 }
                 Err(e) => {
-                    self.report_error(format!("Solo per-member failed — {e}"));
+                    self.report_error(format!("Per-realization run failed — {e}"));
                 }
             }
         }
@@ -692,7 +693,7 @@ impl eframe::App for BywindApp {
 
 /// Worker-side ensemble search. Loads the K members from disk, bakes
 /// them in parallel, wraps them in the right [`WindInput`] variant
-/// based on `robust_mode`, and dispatches to
+/// based on `ensemble_mode`, and dispatches to
 /// `run_search_blocking_with_baked`.
 ///
 /// Returns the same `Result<SearchResult, SearchError>` shape as
@@ -712,7 +713,7 @@ fn run_ensemble_search(
     weights: SearchWeights,
     sdf_resolution_deg: f64,
     fine_sdf_resolution_deg: Option<f64>,
-    robust_mode: RobustMode,
+    ensemble_mode: EnsembleMode,
 ) -> Result<SearchResult, SearchError> {
     let ensemble = match bywind::TimedEnsembleWindMap::load_dir(ensemble_path) {
         Ok(e) => e,
@@ -724,9 +725,9 @@ fn run_ensemble_search(
         }
     };
     let baked = ensemble.bake(bake_bounds);
-    let wind_input = match robust_mode {
-        RobustMode::Full => WindInput::ensemble_full(baked),
-        RobustMode::FastMean => WindInput::ensemble_fast_mean(baked),
+    let wind_input = match ensemble_mode {
+        EnsembleMode::Full => WindInput::ensemble_full(baked),
+        EnsembleMode::FastMean => WindInput::ensemble_fast_mean(baked),
     };
     run_search_blocking_with_baked(
         wind_input,
@@ -740,10 +741,11 @@ fn run_ensemble_search(
     )
 }
 
-/// Worker-side per-member solo cohort. Loads + bakes the ensemble
-/// once, then runs K single-deterministic searches — one per member,
-/// each with seed `base_seed + k` so identically-initialised swarms
-/// don't collapse near-identical winds to bit-identical routes.
+/// Worker-side per-realization cohort. Loads + bakes the ensemble
+/// once, then runs K single-deterministic searches — one per
+/// realization, each with seed `base_seed + k` so identically-
+/// initialised swarms don't collapse near-identical winds to bit-
+/// identical routes.
 ///
 /// Sequential rather than rayon-parallel: each inner search is
 /// already internally parallel via rayon's global pool, so nesting
@@ -751,14 +753,14 @@ fn run_ensemble_search(
 /// wallclock of a single search; on K=31 (full GEFS) it's ~31×.
 ///
 /// First failure short-circuits the whole cohort (returns the error)
-/// so a wind input that's infeasible for one member doesn't quietly
-/// publish a partial overlay.
+/// so a wind input that's infeasible for one realization doesn't
+/// quietly publish a partial overlay.
 #[expect(
     clippy::too_many_arguments,
-    reason = "glue function bridging Run-Solo button to the inner search; \
+    reason = "glue function bridging Run-per-realization button to the inner search; \
               bundling args would just shuffle them around"
 )]
-fn run_solo_per_member_search(
+fn run_realization_searches(
     ensemble_path: &std::path::Path,
     bake_bounds: bywind::wind_map::BakeBounds,
     route_bounds: bywind::RouteBounds,
@@ -769,7 +771,7 @@ fn run_solo_per_member_search(
     weights: SearchWeights,
     sdf_resolution_deg: f64,
     fine_sdf_resolution_deg: Option<f64>,
-) -> Result<Vec<SoloMemberRun>, SearchError> {
+) -> Result<Vec<RealizationRun>, SearchError> {
     let ensemble = match bywind::TimedEnsembleWindMap::load_dir(ensemble_path) {
         Ok(e) => e,
         Err(e) => {
@@ -781,7 +783,7 @@ fn run_solo_per_member_search(
     };
     let baked = ensemble.bake(bake_bounds);
     let names = baked.member_names().to_vec();
-    let mut solo_runs = Vec::with_capacity(names.len());
+    let mut realization_runs = Vec::with_capacity(names.len());
     for (k, name) in names.iter().enumerate() {
         search_settings.seed = Some(base_seed.wrapping_add(k as u64));
         let member_baked = baked.member(k).clone();
@@ -795,13 +797,13 @@ fn run_solo_per_member_search(
             sdf_resolution_deg,
             fine_sdf_resolution_deg,
         )?;
-        // Pre-bake the per-member segment metrics + final fitness so
-        // the Summary dropdown can switch to this member without
-        // re-computing — and so we don't have to store the per-member
-        // `BakedWindMap` in `outputs` to re-bake later. `result.baked`
-        // is this member's baked wind (the search returned ownership);
-        // it's about to be dropped, so this is the only chance to
-        // sample it.
+        // Pre-bake the per-realization segment metrics + final fitness
+        // so the Summary dropdown can switch to this realization
+        // without re-computing — and so we don't have to store the
+        // per-realization `BakedWindMap` in `outputs` to re-bake later.
+        // `result.baked` is this realization's baked wind (the search
+        // returned ownership); it's about to be dropped, so this is
+        // the only chance to sample it.
         let (segment_stats, fitness) =
             route_evolution_match!(&result.route_evolution, |evo| {
                 let frames = evo.frames();
@@ -824,14 +826,14 @@ fn run_solo_per_member_search(
                 );
                 (stats, best.best_fit)
             });
-        solo_runs.push(SoloMemberRun {
+        realization_runs.push(RealizationRun {
             name: name.clone(),
             route_evolution: result.route_evolution,
             segment_stats,
             fitness,
         });
     }
-    Ok(solo_runs)
+    Ok(realization_runs)
 }
 
 #[cfg(test)]

@@ -1354,14 +1354,15 @@ fn draw_dashed_segment(
     }
 }
 
-/// Translucent palette colour for the `idx`-th solo route, cycling
-/// past `SOLO_PALETTE.len()`. Hand-picked to be visually distinct
-/// against blue wind barbs and the orange / red / green gbest path —
-/// no member's colour collides with the start / end / waypoint
-/// markers, and pairs of adjacent indices are far apart in hue so
-/// neighbouring members read as different paths even at low alpha.
-pub(crate) fn solo_palette_color(idx: usize, alpha: u8) -> egui::Color32 {
-    const SOLO_PALETTE: &[(u8, u8, u8)] = &[
+/// Translucent palette colour for the `idx`-th realization route,
+/// cycling past `REALIZATION_PALETTE.len()`. Hand-picked to be visually
+/// distinct against blue wind barbs and the orange / red / green gbest
+/// path — no realization's colour collides with the start / end /
+/// waypoint markers, and pairs of adjacent indices are far apart in
+/// hue so neighbouring realizations read as different paths even at
+/// low alpha.
+pub(crate) fn realization_palette_color(idx: usize, alpha: u8) -> egui::Color32 {
+    const REALIZATION_PALETTE: &[(u8, u8, u8)] = &[
         (255, 99, 132),  // pink
         (54, 162, 235),  // blue
         (255, 206, 86),  // yellow
@@ -1371,18 +1372,18 @@ pub(crate) fn solo_palette_color(idx: usize, alpha: u8) -> egui::Color32 {
         (180, 220, 120), // lime
         (220, 130, 220), // magenta
     ];
-    let (r, g, b) = SOLO_PALETTE[idx % SOLO_PALETTE.len()];
+    let (r, g, b) = REALIZATION_PALETTE[idx % REALIZATION_PALETTE.len()];
     egui::Color32::from_rgba_unmultiplied(r, g, b, alpha)
 }
 
-/// Polyline-only path draw for the solo per-member overlay. Reuses
-/// the same antimeridian-unwrap + shadow-tile loop as [`draw_path`]
-/// so a solo route that crosses the seam still appears across both
+/// Polyline-only path draw for the per-realization overlay. Reuses the
+/// same antimeridian-unwrap + shadow-tile loop as [`draw_path`] so a
+/// realization route that crosses the seam still appears across both
 /// halves of the map, but omits node markers and waypoint labels —
-/// K members worth of marker noise on top of the gbest path would
+/// K realizations worth of marker noise on top of the gbest path would
 /// drown out the main route. The caller picks `stroke_color` (see
-/// [`solo_palette_color`]).
-pub(crate) fn draw_solo_route<const N: usize>(
+/// [`realization_palette_color`]).
+pub(crate) fn draw_realization_route<const N: usize>(
     painter: &egui::Painter,
     path: &Path<N>,
     view: &ViewTransform,

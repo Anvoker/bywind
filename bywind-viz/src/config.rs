@@ -222,12 +222,12 @@ pub(crate) struct ViewState {
     /// considers sea).
     pub(crate) show_sdf_overlay: bool,
 
-    /// True → overlay the per-member solo-run routes (the final-iteration
-    /// gbest path from each entry of `outputs.solo_runs`) on top of the
-    /// main gbest. Each solo route is drawn as a translucent polyline in
-    /// a per-index palette colour. Safe to leave on with `solo_runs`
-    /// empty (no-op).
-    pub(crate) show_solo_routes: bool,
+    /// True → overlay the per-realization routes (the final-iteration
+    /// gbest path from each entry of `outputs.realization_runs`) on top
+    /// of the main gbest. Each realization route is drawn as a
+    /// translucent polyline in a per-index palette colour. Safe to
+    /// leave on with `realization_runs` empty (no-op).
+    pub(crate) show_realization_routes: bool,
 
     /// True formats route time as `Nd Nh Nm Ns`; false as raw seconds.
     /// Right-click on the Summary heading toggles.
@@ -293,7 +293,7 @@ impl Default for ViewState {
             render_scale: 1e-4,
             show_all_particles: false,
             show_sdf_overlay: false,
-            show_solo_routes: true,
+            show_realization_routes: true,
             total_time_breakdown: true,
             total_fuel_tonnes: true,
             pan_offset: egui::Vec2::ZERO,

@@ -1,7 +1,8 @@
 use crate::config::Tool;
 use crate::draw::{
-    draw_benchmark_route, draw_coastlines, draw_endpoint_markers, draw_minimap, draw_route_bounds,
-    draw_solo_route, draw_windmap, render_route_evolution, solo_palette_color,
+    draw_benchmark_route, draw_coastlines, draw_endpoint_markers, draw_minimap,
+    draw_realization_route, draw_route_bounds, draw_windmap, realization_palette_color,
+    render_route_evolution,
 };
 use crate::view::ViewTransform;
 use bywind::{

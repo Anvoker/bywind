@@ -124,11 +124,11 @@ pub struct SearchOverrides {
     /// (or the CLI `<MAP>` arg) is ignored.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ensemble_path: Option<std::path::PathBuf>,
-    /// Robust-fitness mode when `ensemble_path` is set. Serialises as
-    /// `"full"` or `"fast-mean"`; `None` keeps the existing `SearchConfig`
-    /// default (currently `Full`).
+    /// Ensemble aggregation mode when `ensemble_path` is set. Serialises
+    /// as `"full"` or `"fast-mean"`; `None` keeps the existing
+    /// `SearchConfig` default (currently `Full`).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub robust_mode: Option<crate::config::RobustMode>,
+    pub ensemble_mode: Option<crate::config::EnsembleMode>,
     /// Optional RNG seed for deterministic search runs. `None` (the
     /// default) draws fresh OS entropy. Used by the PSO-tuning study.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -531,8 +531,8 @@ impl SearchOverrides {
         if other.ensemble_path.is_some() {
             self.ensemble_path = other.ensemble_path;
         }
-        if other.robust_mode.is_some() {
-            self.robust_mode = other.robust_mode;
+        if other.ensemble_mode.is_some() {
+            self.ensemble_mode = other.ensemble_mode;
         }
         if other.seed.is_some() {
             self.seed = other.seed;
@@ -585,8 +585,8 @@ impl SearchOverrides {
         if let Some(v) = &self.ensemble_path {
             cfg.ensemble_path = Some(v.clone());
         }
-        if let Some(v) = self.robust_mode {
-            cfg.robust_mode = v;
+        if let Some(v) = self.ensemble_mode {
+            cfg.ensemble_mode = v;
         }
         if let Some(v) = self.seed {
             cfg.seed = Some(v);

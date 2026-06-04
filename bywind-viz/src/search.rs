@@ -4,7 +4,7 @@
 //! mutate; this module owns only the value-side types those adapters
 //! produce.
 
-use bywind::{BakedWindMap, BenchmarkRoute, EnsembleAssessment, RouteEvolution, SegmentMetrics};
+use bywind::{BakedWindMap, BenchmarkRoute, EnsembleSpread, RouteEvolution, SegmentMetrics};
 use swarmkit_sailing::{Boat, RouteBounds};
 
 /// Message sent from the time-reoptimization worker thread back to the UI on
@@ -59,25 +59,25 @@ pub(crate) struct SearchOutputs {
     #[serde(skip)]
     pub(crate) benchmark: Option<BenchmarkRoute>,
 
-    /// Per-member assessment of the gbest path from an ensemble
+    /// Per-member spread of the gbest path's metrics from an ensemble
     /// search. `None` for single-deterministic searches.
     #[serde(skip)]
-    pub(crate) ensemble: Option<EnsembleAssessment>,
+    pub(crate) ensemble: Option<EnsembleSpread>,
 
     /// K independent single-deterministic PSO results, one per
-    /// ensemble member. Populated only when the user clicks
-    /// "Run solo per member"; empty otherwise. Cleared on any main
-    /// Run Search so a stale cohort doesn't get drawn against a
-    /// freshly-changed route bbox / endpoints.
+    /// ensemble member viewed as a separate realization. Populated only
+    /// when the user clicks "Run per realization"; empty otherwise.
+    /// Cleared on any main Run Search so a stale cohort doesn't get
+    /// drawn against a freshly-changed route bbox / endpoints.
     #[serde(skip)]
-    pub(crate) solo_runs: Vec<SoloMemberRun>,
+    pub(crate) realization_runs: Vec<RealizationRun>,
 
     /// Which route the right-side stats panel renders — the main
-    /// gbest or one of the solo cohort members. Bound to the Summary
-    /// dropdown + the solo legend rows; reset to `Gbest` on every
-    /// main Run Search (any prior solo selection is stale once the
-    /// gbest changes), clamped to a valid range on solo-cohort
-    /// success arrival.
+    /// gbest or one of the realization runs. Bound to the Summary
+    /// dropdown + the realization legend rows; reset to `Gbest` on
+    /// every main Run Search (any prior realization selection is stale
+    /// once the gbest changes), clamped to a valid range on
+    /// realization-cohort success arrival.
     #[serde(skip)]
     pub(crate) summary_selection: SummarySelection,
 
@@ -106,45 +106,46 @@ pub(crate) struct SearchOutputs {
     pub(crate) last_search_seed: Option<u64>,
 }
 
-/// One ensemble member's independent PSO result. Produced by the
-/// "Run solo per member" button — a separate dispatch from the main
-/// Run Search that runs K single-deterministic searches against each
-/// member, so the user can see *what alternate routes look like* per
-/// member (not just how the converged gbest scores against them).
-pub(crate) struct SoloMemberRun {
+/// One ensemble member's independent PSO result, viewed as a separate
+/// weather realization. Produced by the "Run per realization" button —
+/// a separate dispatch from the main Run Search that runs K
+/// single-deterministic searches against each member, so the user can
+/// see *what alternate routes look like* under each realization (not
+/// just how the converged gbest scores against them).
+pub(crate) struct RealizationRun {
     /// `.wcav` filename stem of the source member (e.g. `"gec00"`,
     /// `"gep08"`). Used to label the overlay legend and the summary
     /// dropdown.
     pub(crate) name: String,
-    /// Full evolution for the per-member solo search. We keep the
+    /// Full evolution for the per-realization search. We keep the
     /// whole evolution rather than just the final path so the
     /// iteration scrubber in the main UI could (later) animate the
-    /// solo cohort alongside the gbest if we want to; today the draw
-    /// layer reads only the final iteration.
+    /// realization cohort alongside the gbest if we want to; today the
+    /// draw layer reads only the final iteration.
     pub(crate) route_evolution: RouteEvolution,
     /// Per-segment metrics for the final-iteration gbest of this
-    /// member's solo search, computed against this member's baked wind
-    /// at search-completion time. Pre-baked here (rather than at
-    /// display time) so switching the summary dropdown to this member
-    /// is a lookup, not a re-bake — and so we don't have to store K
-    /// extra baked wind maps in `outputs`.
+    /// realization's search, computed against the source member's
+    /// baked wind at search-completion time. Pre-baked here (rather
+    /// than at display time) so switching the summary dropdown to this
+    /// realization is a lookup, not a re-bake — and so we don't have
+    /// to store K extra baked wind maps in `outputs`.
     pub(crate) segment_stats: Vec<SegmentMetrics>,
     /// `best_fit` of the final-iteration gbest particle. Negated cost;
-    /// higher is better. Used by the Summary panel when this member
-    /// is the selected view source.
+    /// higher is better. Used by the Summary panel when this
+    /// realization is the selected view source.
     pub(crate) fitness: f64,
 }
 
 /// Which route the right-side stats panel renders.
 ///
 /// `Gbest` is the historical default: the main converged gbest path
-/// plus its benchmark / ensemble metadata. `SoloMember(idx)` switches
+/// plus its benchmark / ensemble metadata. `Realization(idx)` switches
 /// the summary + segments scroll to the `idx`-th entry of
-/// `outputs.solo_runs`; benchmark / ensemble blocks hide because
-/// they're about the main search, not the per-member solo.
+/// `outputs.realization_runs`; benchmark / ensemble blocks hide
+/// because they're about the main search, not a single realization.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub(crate) enum SummarySelection {
     #[default]
     Gbest,
-    SoloMember(usize),
+    Realization(usize),
 }

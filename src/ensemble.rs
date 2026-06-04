@@ -1,11 +1,35 @@
 //! Ensemble wind: collection of per-member [`TimedWindMap`] /
 //! [`BakedWindMap`] instances.
 //!
+//! # Vocabulary
+//!
+//! - **Ensemble** — the K-member set (e.g. GEFS: 1 control `gec00`
+//!   + 30 perturbations `gep01..gep30`).
+//! - **Member** — one stored wind dataset within an ensemble.
+//!   Indexed by `k`, stably ordered by `.wcav` filename.
+//! - **Realization** — one member viewed as a self-contained weather
+//!   hypothesis ("if member k were the true future wind"). The
+//!   mapping member ↔ realization is identity; we use "member" when
+//!   talking about the data and "realization" when talking about
+//!   the hypothesis.
+//! - **Main search** — the single PSO search the user runs against
+//!   the whole ensemble, aggregated via an [`EnsembleMode`]
+//!   ([`crate::EnsembleMode`]). Produces one converged gbest route.
+//! - **Realization run** — an independent PSO search against just
+//!   one member, treated as if it were ground truth. K runs total;
+//!   each produces its own gbest route. Lives in the viz crate
+//!   (`bywind_viz::search::RealizationRun`); the core has no notion
+//!   of these.
+//! - **Ensemble spread** — per-member evaluation of the main search's
+//!   gbest path: same route, K winds. Type
+//!   [`crate::EnsembleSpread`]. Narrow spread → robust route; wide
+//!   spread → brittle.
+//!
+//! # Data path
+//!
 //! Loaded from a directory of `.wcav` files (one per member, naming
 //! convention `gec00.wcav` / `gepNN.wcav` from the
 //! [`crate::fetch_ensemble`] CLI subcommand).
-//!
-//! The data path is:
 //!
 //! 1. [`TimedEnsembleWindMap::load_dir`] — discover member files,
 //!    decode each `.wcav` in parallel, sort by filename so the

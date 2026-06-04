@@ -1,8 +1,8 @@
 use super::{
     LonLatBbox, MAP_PADDING, MapBounds, SCALE_MAX, Tool, ViewTransform, draw_benchmark_route,
-    draw_coastlines, draw_endpoint_markers, draw_minimap, draw_route_bounds, draw_solo_route,
-    draw_windmap, min_render_scale, powered_by_egui_and_eframe, render_route_evolution,
-    route_evolution_match, solo_palette_color,
+    draw_coastlines, draw_endpoint_markers, draw_minimap, draw_realization_route,
+    draw_route_bounds, draw_windmap, min_render_scale, powered_by_egui_and_eframe,
+    realization_palette_color, render_route_evolution, route_evolution_match,
 };
 use crate::app::BywindApp;
 
@@ -177,13 +177,13 @@ impl BywindApp {
                 draw_benchmark_route(ui.painter(), bench, &view);
             }
 
-            // Solo per-member overlay sits between the benchmark and
+            // Per-realization overlay sits between the benchmark and
             // the gbest path so the K alternates read as background
             // context while the gbest stays the visual focus. Same
             // "show all particles" suppression rule as the benchmark.
-            if !self.view.show_all_particles && self.view.show_solo_routes {
-                self.render_solo_overlay(ui, &view);
-                self.render_solo_legend(ui, panel_rect);
+            if !self.view.show_all_particles && self.view.show_realization_routes {
+                self.render_realization_overlay(ui, &view);
+                self.render_realization_legend(ui, panel_rect);
             }
 
             self.render_route_overlay(ui, &view, waypoint_label);
@@ -281,16 +281,16 @@ impl BywindApp {
         ));
     }
 
-    /// Per-member solo-cohort overlay. For each entry in
-    /// `outputs.solo_runs`, draws the final-iteration gbest path
-    /// (polyline only, no waypoint markers) in a translucent
-    /// per-index palette colour. No-op when `solo_runs` is empty so
-    /// the caller can flip the `show_solo_routes` toggle without
+    /// Per-realization overlay. For each entry in
+    /// `outputs.realization_runs`, draws the final-iteration gbest path
+    /// (polyline only, no waypoint markers) in a translucent per-index
+    /// palette colour. No-op when `realization_runs` is empty so the
+    /// caller can flip the `show_realization_routes` toggle without
     /// having to also gate it on cohort presence.
-    fn render_solo_overlay(&self, ui: &egui::Ui, view: &ViewTransform) {
-        const SOLO_ALPHA: u8 = 110;
-        for (idx, run) in self.outputs.solo_runs.iter().enumerate() {
-            let color = solo_palette_color(idx, SOLO_ALPHA);
+    fn render_realization_overlay(&self, ui: &egui::Ui, view: &ViewTransform) {
+        const REALIZATION_ALPHA: u8 = 110;
+        for (idx, run) in self.outputs.realization_runs.iter().enumerate() {
+            let color = realization_palette_color(idx, REALIZATION_ALPHA);
             route_evolution_match!(&run.route_evolution, |evo| {
                 let frames = evo.frames();
                 let Some(particles) = frames.last() else {
@@ -303,7 +303,7 @@ impl BywindApp {
                 }) else {
                     continue;
                 };
-                draw_solo_route(ui.painter(), &best.best_pos, view, color);
+                draw_realization_route(ui.painter(), &best.best_pos, view, color);
             });
         }
     }
@@ -314,15 +314,15 @@ impl BywindApp {
     /// foreground `Area` so it floats above the panel without
     /// claiming layout space (mirrors the bundled-sample status
     /// toast). Each row is a `selectable_value` bound to
-    /// `outputs.summary_selection` so clicking a member switches the
-    /// right-side Summary / Segments to that member's totals — same
-    /// effect as picking it from the Summary dropdown. No-op when
-    /// `solo_runs` is empty.
-    fn render_solo_legend(&mut self, ui: &egui::Ui, panel_rect: egui::Rect) {
-        if self.outputs.solo_runs.is_empty() {
+    /// `outputs.summary_selection` so clicking a realization switches
+    /// the right-side Summary / Segments to that realization's totals
+    /// — same effect as picking it from the Summary dropdown. No-op
+    /// when `realization_runs` is empty.
+    fn render_realization_legend(&mut self, ui: &egui::Ui, panel_rect: egui::Rect) {
+        if self.outputs.realization_runs.is_empty() {
             return;
         }
-        let id = egui::Id::new("solo_routes_legend");
+        let id = egui::Id::new("realization_routes_legend");
         egui::Area::new(id)
             .order(egui::Order::Foreground)
             .fixed_pos(panel_rect.left_top() + egui::Vec2::splat(MAP_PADDING * 0.5))
@@ -330,8 +330,8 @@ impl BywindApp {
                 egui::Frame::popup(ui.style())
                     .fill(ui.visuals().panel_fill.gamma_multiply(0.85))
                     .show(ui, |ui| {
-                        ui.label(egui::RichText::new("Solo per member").strong());
-                        for (idx, run) in self.outputs.solo_runs.iter().enumerate() {
+                        ui.label(egui::RichText::new("Realizations").strong());
+                        for (idx, run) in self.outputs.realization_runs.iter().enumerate() {
                             ui.horizontal(|ui| {
                                 let (rect, _) = ui.allocate_exact_size(
                                     egui::Vec2::new(12.0, 12.0),
@@ -340,11 +340,11 @@ impl BywindApp {
                                 ui.painter().rect_filled(
                                     rect,
                                     2.0,
-                                    solo_palette_color(idx, 255),
+                                    realization_palette_color(idx, 255),
                                 );
                                 ui.selectable_value(
                                     &mut self.outputs.summary_selection,
-                                    crate::search::SummarySelection::SoloMember(idx),
+                                    crate::search::SummarySelection::Realization(idx),
                                     &run.name,
                                 );
                             });

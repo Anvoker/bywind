@@ -223,22 +223,22 @@ pub struct SearchConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ensemble_path: Option<std::path::PathBuf>,
 
-    /// Robust-fitness aggregation mode used when `ensemble_path` is
-    /// set. `RobustMode::Full` (default) runs the K-fold loop with
-    /// [`swarmkit_sailing::RobustObjective::Mean`]; `RobustMode::FastMean`
+    /// Aggregation strategy used when `ensemble_path` is set.
+    /// `EnsembleMode::Full` (default) runs the K-fold loop with
+    /// [`swarmkit_sailing::RobustObjective::Mean`]; `EnsembleMode::FastMean`
     /// pre-computes a single mean wind map and runs the existing
     /// single-deterministic search against it — much faster, but
     /// `E[f(x, wind)] ≠ f(x, E[wind])` so the result is a linearisation
     /// approximation. Ignored when `ensemble_path` is `None`.
     #[serde(default)]
-    pub robust_mode: RobustMode,
+    pub ensemble_mode: EnsembleMode,
 }
 
 /// Aggregation strategy for ensemble fitness. Round-trips through TOML
-/// / JSON as the lowercase variant name (`"full"` / `"fast-mean"`).
+/// / JSON as the kebab-case variant name (`"full"` / `"fast-mean"`).
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum RobustMode {
+pub enum EnsembleMode {
     /// K-fold robust fitness — every particle is scored against all
     /// K members and the per-member fitnesses are reduced via mean.
     /// Slowest mode; the only one where the search sees ensemble
@@ -247,7 +247,7 @@ pub enum RobustMode {
     Full,
     /// Pre-compute the mean wind map once and run the existing
     /// single-deterministic search against it. ~K× faster than
-    /// `Full`. See the doc on `SearchConfig::robust_mode` for the
+    /// `Full`. See the doc on `SearchConfig::ensemble_mode` for the
     /// `E[f] vs f(E)` caveat.
     FastMean,
 }
@@ -278,7 +278,7 @@ impl Default for SearchConfig {
             k_mcr: DEFAULT_K_MCR,
             topology: Topology::default(),
             ensemble_path: None,
-            robust_mode: RobustMode::default(),
+            ensemble_mode: EnsembleMode::default(),
         }
     }
 }

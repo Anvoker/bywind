@@ -18,7 +18,7 @@ impl BywindApp {
         let mut toggle_summary = false;
         // Resolve the current summary view-source up front so both the
         // Summary block and the Segments scroll below it agree. A
-        // dangling `SoloMember(k)` (cohort shrank but we haven't
+        // dangling `Realization(k)` (cohort shrank but we haven't
         // observed it yet via the poll arm) falls through to None
         // rather than panicking.
         let (stats, selected_fitness) = match self.outputs.summary_selection {
@@ -26,7 +26,7 @@ impl BywindApp {
                 self.outputs.segment_stats.clone(),
                 self.outputs.best_fitness,
             ),
-            SummarySelection::SoloMember(k) => match self.outputs.solo_runs.get(k) {
+            SummarySelection::Realization(k) => match self.outputs.realization_runs.get(k) {
                 Some(run) => (Some(run.segment_stats.clone()), Some(run.fitness)),
                 None => (None, None),
             },
@@ -50,7 +50,7 @@ impl BywindApp {
                 // wrapped when there's actually a cohort to pick
                 // from; an empty selector would otherwise eat a strip
                 // of vertical space at the bottom for no payoff.
-                if !self.outputs.solo_runs.is_empty() {
+                if !self.outputs.realization_runs.is_empty() {
                     egui::Panel::bottom("stats_panel_selector").show_inside(ui, |ui| {
                         self.render_summary_selector(ui);
                     });
@@ -81,7 +81,7 @@ impl BywindApp {
     }
 
     /// Top-down summary block for the right-panel's bottom sub-panel:
-    /// the source selector (Main gbest vs solo per-member), totals
+    /// the source selector (Main gbest vs per realization), totals
     /// for the selected source, and — only when viewing the main
     /// gbest — the benchmark / ensemble-spread blocks. Returns true
     /// if the Summary heading was right-clicked this frame so the
@@ -115,10 +115,10 @@ impl BywindApp {
         ui.label(format!("Total fuel: {total_fuel_str}"));
         ui.label(format!("Total land: {}", format_land_km(total_land_metres)));
         // Bake / Search timings only describe the main search. We
-        // don't track per-member solo timings (the cohort shares a
+        // don't track per-realization timings (the cohort shares a
         // single bake and the K wallclock is dominated by the loop
-        // total, not per-member), so hide both when the user has
-        // switched the dropdown to a solo member.
+        // total, not per-realization), so hide both when the user has
+        // switched the dropdown to a realization.
         if is_gbest {
             if let Some(d) = bake_duration {
                 ui.label(format!("Bake:       {:.2}s", d.as_secs_f64()));
@@ -136,11 +136,11 @@ impl BywindApp {
             ui.label(format!("Fitness:    {fit_str}"));
         }
         // Benchmark + ensemble-spread blocks are both about the main
-        // converged gbest — they don't make sense for a solo member's
-        // independent search. Instead, for a solo view we show a
-        // "Main:" delta grid so the user can read how the per-member
-        // optimum compares to the ensemble-chosen route (analogous to
-        // Main view's Bench grid).
+        // converged gbest — they don't make sense for a realization's
+        // independent search. Instead, for a realization view we show
+        // a "Main:" delta grid so the user can read how the
+        // per-realization optimum compares to the ensemble-chosen
+        // route (analogous to Main view's Bench grid).
         if !is_gbest {
             self.render_main_comparison(
                 ui,
@@ -213,22 +213,22 @@ impl BywindApp {
         toggle_summary
     }
 
-    /// Counterpart to the Main view's Bench grid, shown on a solo
-    /// view. The selected solo member's totals are passed in (already
-    /// summed by the caller); we sum the main gbest's totals from
-    /// `outputs.segment_stats` here and render each row as
-    /// "Main <metric>:  <value>  (Solo X% better/worse)". The deltas
-    /// are oriented so positive % always means the solo improved over
-    /// main on that axis, matching the Main-vs-Bench convention.
-    /// Hidden when the main gbest's metadata isn't around — re-load
-    /// of an old session before any search runs, for example.
+    /// Counterpart to the Main view's Bench grid, shown on a
+    /// realization view. The selected realization's totals are passed
+    /// in (already summed by the caller); we sum the main gbest's
+    /// totals from `outputs.segment_stats` here and render each row as
+    /// "Main <metric>:  <value>  (Realization X% better/worse)". The
+    /// deltas are oriented so positive % always means the realization
+    /// improved over main on that axis, matching the Main-vs-Bench
+    /// convention. Hidden when the main gbest's metadata isn't around
+    /// — re-load of an old session before any search runs, for example.
     fn render_main_comparison(
         &self,
         ui: &mut egui::Ui,
-        solo_total_time: f64,
-        solo_total_fuel: f64,
-        solo_total_land: f64,
-        solo_fitness: Option<f64>,
+        realization_total_time: f64,
+        realization_total_fuel: f64,
+        realization_total_land: f64,
+        realization_fitness: Option<f64>,
         segment_in_tonnes: bool,
     ) {
         let Some(main_stats) = self.outputs.segment_stats.as_deref() else {
@@ -251,7 +251,7 @@ impl BywindApp {
                 ui.label(format!("Main time: {main_time_str}"));
                 ui.label(format!(
                     "({})",
-                    format_pso_delta(solo_total_time, main_total_time, false),
+                    format_pso_delta(realization_total_time, main_total_time, false),
                 ));
                 ui.end_row();
 
@@ -259,7 +259,7 @@ impl BywindApp {
                 ui.label(format!("Main fuel: {main_fuel_str}"));
                 ui.label(format!(
                     "({})",
-                    format_pso_delta(solo_total_fuel, main_total_fuel, false),
+                    format_pso_delta(realization_total_fuel, main_total_fuel, false),
                 ));
                 ui.end_row();
 
@@ -269,7 +269,7 @@ impl BywindApp {
                 ));
                 ui.label(format!(
                     "({})",
-                    format_pso_delta(solo_total_land, main_total_land, false),
+                    format_pso_delta(realization_total_land, main_total_land, false),
                 ));
                 ui.end_row();
 
@@ -280,11 +280,11 @@ impl BywindApp {
                         format!("{mf:.4}")
                     };
                     ui.label(format!("Main fit:  {main_fit_str}"));
-                    if let Some(sf) = solo_fitness {
+                    if let Some(rf) = realization_fitness {
                         // `is_fitness=true` flips the delta sign
                         // (fitness is negated cost — higher better),
                         // matching the Bench grid's Fit row.
-                        ui.label(format!("({})", format_pso_delta(sf, mf, true)));
+                        ui.label(format!("({})", format_pso_delta(rf, mf, true)));
                     } else {
                         ui.label("");
                     }
@@ -294,20 +294,20 @@ impl BywindApp {
     }
 
     /// View-source selector: a combo box that picks between the main
-    /// converged gbest and any of the per-member solo cohort
-    /// entries. Hidden when there's no solo cohort to choose from —
+    /// converged gbest and any of the per-realization cohort entries.
+    /// Hidden when there's no realization cohort to choose from —
     /// nothing for the user to pick.
     fn render_summary_selector(&mut self, ui: &mut egui::Ui) {
-        if self.outputs.solo_runs.is_empty() {
+        if self.outputs.realization_runs.is_empty() {
             return;
         }
         let current_label: String = match self.outputs.summary_selection {
             SummarySelection::Gbest => "Main (gbest)".to_owned(),
-            SummarySelection::SoloMember(k) => self
+            SummarySelection::Realization(k) => self
                 .outputs
-                .solo_runs
+                .realization_runs
                 .get(k)
-                .map(|run| format!("Solo: {}", run.name))
+                .map(|run| format!("Realization: {}", run.name))
                 .unwrap_or_else(|| "Main (gbest)".to_owned()),
         };
         ui.horizontal(|ui| {
@@ -320,11 +320,11 @@ impl BywindApp {
                         SummarySelection::Gbest,
                         "Main (gbest)",
                     );
-                    for (idx, run) in self.outputs.solo_runs.iter().enumerate() {
+                    for (idx, run) in self.outputs.realization_runs.iter().enumerate() {
                         ui.selectable_value(
                             &mut self.outputs.summary_selection,
-                            SummarySelection::SoloMember(idx),
-                            format!("Solo: {}", run.name),
+                            SummarySelection::Realization(idx),
+                            format!("Realization: {}", run.name),
                         );
                     }
                 });
@@ -338,7 +338,7 @@ impl BywindApp {
     fn render_ensemble_spread(
         &self,
         ui: &mut egui::Ui,
-        ens: &bywind::EnsembleAssessment,
+        ens: &bywind::EnsembleSpread,
         segment_in_tonnes: bool,
     ) {
         let k = ens.per_member.len();
@@ -763,11 +763,11 @@ impl BywindApp {
     /// "Ensemble" pair of rows in the Advanced Settings grid: text
     /// field for the directory of `.wcav` files (one per member,
     /// produced by `bywind-cli fetch-ensemble`) and a combo box
-    /// selecting the robust-fitness mode. Mutually exclusive with the
+    /// selecting the aggregation mode. Mutually exclusive with the
     /// regular wind-map selection — when an ensemble path is set, the
     /// wind-map slot is ignored at search time.
     fn render_ensemble_rows(&mut self, ui: &mut egui::Ui) {
-        use bywind::RobustMode;
+        use bywind::EnsembleMode;
         ui.label("Ensemble dir").on_hover_text(
             "Path to a directory of ensemble `.wcav` files (output of \
              `bywind-cli fetch-ensemble`). When set, the search runs \
@@ -802,7 +802,7 @@ impl BywindApp {
         });
         ui.end_row();
 
-        ui.label("Robust mode").on_hover_text(
+        ui.label("Ensemble mode").on_hover_text(
             "Aggregation strategy when an ensemble directory is set. \
              `Full` runs K-fold robust fitness (currently mean of \
              per-member fitnesses); `Fast mean` pre-computes a single \
@@ -814,17 +814,17 @@ impl BywindApp {
         ui.horizontal(|ui| {
             let enabled = self.search.ensemble_path.is_some();
             ui.add_enabled_ui(enabled, |ui| {
-                let mut mode = self.search.robust_mode;
-                egui::ComboBox::from_id_salt("ensemble_robust_mode")
+                let mut mode = self.search.ensemble_mode;
+                egui::ComboBox::from_id_salt("ensemble_mode")
                     .selected_text(match mode {
-                        RobustMode::Full => "Full (K-fold)",
-                        RobustMode::FastMean => "Fast mean",
+                        EnsembleMode::Full => "Full (K-fold)",
+                        EnsembleMode::FastMean => "Fast mean",
                     })
                     .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut mode, RobustMode::Full, "Full (K-fold)");
-                        ui.selectable_value(&mut mode, RobustMode::FastMean, "Fast mean");
+                        ui.selectable_value(&mut mode, EnsembleMode::Full, "Full (K-fold)");
+                        ui.selectable_value(&mut mode, EnsembleMode::FastMean, "Fast mean");
                     });
-                self.search.robust_mode = mode;
+                self.search.ensemble_mode = mode;
             });
             if !enabled {
                 ui.weak("(set ensemble dir to enable)");
@@ -892,61 +892,62 @@ impl BywindApp {
             });
         }
 
-        // "Run solo per member" is the secondary action that only
+        // "Run per realization" is the secondary action that only
         // makes sense after a main search has converged against an
         // ensemble — gating on `route_evolution.is_some()` hides the
         // button entirely (rather than disabled-greyed) when neither
         // condition holds, so the routine single-deterministic
         // workflow doesn't show a control that has nothing to do.
         if self.search.ensemble_path.is_some() && self.outputs.route_evolution.is_some() {
-            let solo_running = self.solo_job.is_running();
-            let solo_label = if solo_running {
-                self.solo_started_at
-                    .map(|t| format!("Cancel solo ({}s)", t.elapsed().as_secs()))
-                    .unwrap_or_else(|| "Cancel solo".to_owned())
+            let realization_running = self.realization_job.is_running();
+            let realization_label = if realization_running {
+                self.realization_started_at
+                    .map(|t| format!("Cancel ({}s)", t.elapsed().as_secs()))
+                    .unwrap_or_else(|| "Cancel".to_owned())
             } else {
-                "Run solo per ensemble member".to_owned()
+                "Run per realization".to_owned()
             };
-            let solo_fill = if solo_running {
+            let realization_fill = if realization_running {
                 egui::Color32::from_rgb(180, 60, 60)
             } else {
                 egui::Color32::from_rgb(70, 110, 160)
             };
-            let solo_resp = ui
+            let realization_resp = ui
                 .add_sized(
                     [ui.available_width(), 24.0],
-                    egui::Button::new(egui::RichText::new(solo_label).size(14.0))
-                        .fill(solo_fill),
+                    egui::Button::new(egui::RichText::new(realization_label).size(14.0))
+                        .fill(realization_fill),
                 )
                 .on_hover_text(
                     "Run K independent single-deterministic searches, one per \
-                     ensemble member, so you can see what alternate routes each \
-                     member's wind would produce. K× wallclock; runs in the \
-                     background. Result lands as a translucent overlay; switch \
-                     the Summary dropdown to a member to see its totals.",
+                     realization (ensemble member viewed as ground truth), so \
+                     you can see what alternate routes each realization's wind \
+                     would produce. K× wallclock; runs in the background. \
+                     Result lands as a translucent overlay; switch the Summary \
+                     dropdown to a realization to see its totals.",
                 );
-            if solo_resp.clicked() {
-                if solo_running {
-                    self.solo_job.cancel();
-                    self.solo_started_at = None;
+            if realization_resp.clicked() {
+                if realization_running {
+                    self.realization_job.cancel();
+                    self.realization_started_at = None;
                 } else {
-                    self.run_solo_per_member(ui.ctx());
+                    self.run_realizations(ui.ctx());
                 }
             }
-            if solo_running {
+            if realization_running {
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    ui.label("Solo per member running…");
+                    ui.label("Per-realization run in progress…");
                 });
             }
         }
 
         ui.checkbox(&mut self.view.show_all_particles, "Show all particles");
-        ui.checkbox(&mut self.view.show_solo_routes, "Show solo routes")
+        ui.checkbox(&mut self.view.show_realization_routes, "Show realization routes")
             .on_hover_text(
-                "Overlay the K solo per-member routes on the central panel. \
-                 Each route is a translucent polyline in a per-member palette \
-                 colour. No-op until you've run \"Run solo per ensemble member\".",
+                "Overlay the K per-realization routes on the central panel. \
+                 Each route is a translucent polyline in a per-realization \
+                 palette colour. No-op until you've run \"Run per realization\".",
             );
         ui.checkbox(&mut self.view.show_sdf_overlay, "Show SDF cells")
             .on_hover_text(
@@ -1224,7 +1225,7 @@ impl BywindApp {
                     self.search.k_mcr = defaults.k_mcr;
                     self.search.seed = defaults.seed;
                     self.search.ensemble_path = defaults.ensemble_path.clone();
-                    self.search.robust_mode = defaults.robust_mode;
+                    self.search.ensemble_mode = defaults.ensemble_mode;
                 }
             });
         // Mirror `open` back so the title-bar X toggles the flag.
