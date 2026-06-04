@@ -88,6 +88,12 @@ pub(crate) struct EditorState {
     #[serde(skip)]
     pub(crate) fetch_dialog: FetchDialogState,
 
+    /// Inputs for the `File → Fetch GEFS Ensemble…` dialog. Defaults
+    /// derive from the loaded main wcav (start / end / interval), so
+    /// reusing across sessions wouldn't be meaningful — session-local.
+    #[serde(skip)]
+    pub(crate) fetch_ensemble_dialog: FetchEnsembleDialogState,
+
     /// True while the standalone Wind-data generator window (opened from
     /// Settings → Advanced…) is showing. Reset on every session.
     #[serde(skip)]
@@ -134,6 +140,7 @@ impl Default for EditorState {
             pre_ctrl_tool: None,
             advanced_settings_open: false,
             fetch_dialog: FetchDialogState::default(),
+            fetch_ensemble_dialog: FetchEnsembleDialogState::default(),
             generate_window_open: false,
             parked_seed: None,
             highlight_endpoint_tool: false,
@@ -199,6 +206,43 @@ impl FetchOutputFormat {
             Self::Grib2 => "GRIB2 (.grib2)",
         }
     }
+}
+
+/// `File → Fetch GEFS Ensemble…` dialog state. Mirrors
+/// [`FetchDialogState`] but for the multi-member GEFS pull. Output is
+/// a directory containing one `.wcav` per fetched member named with
+/// the bywind ensemble loader's expected convention (`gec00.wcav`,
+/// `gep03.wcav`, …); the [`Self::basename`] field is the subfolder
+/// under [`Self::out_dir`] those files land in, so the user can keep
+/// successive runs side-by-side.
+#[derive(Default)]
+pub(crate) struct FetchEnsembleDialogState {
+    /// True while the modal is being rendered. Cleared by Close /
+    /// window-X.
+    pub(crate) open: bool,
+    /// Window start as `YYYYMMDDHH`, snapped to the most recent 6 h
+    /// GEFS cycle ≤ the loaded wind map's start.
+    pub(crate) start_text: String,
+    /// Window end as `YYYYMMDDHH`. Exclusive, matching the
+    /// single-fetch dialog and CLI semantics.
+    pub(crate) end_text: String,
+    /// Frame cadence in hours. Default = the loaded wind map's step
+    /// snapped to GEFS-valid {1, 2, 3, 6}. The bucket actually
+    /// publishes at 3 h — values below that 404 on most frames.
+    pub(crate) interval_h: u32,
+    /// Number of ensemble members to pull (stride-sampled from 31).
+    pub(crate) members: usize,
+    /// Parent directory for the run's output folder.
+    pub(crate) out_dir: String,
+    /// Subfolder name created under `out_dir`. Files inside use bare
+    /// `gec00.wcav` / `gepNN.wcav` names so `TimedEnsembleWindMap::
+    /// load_dir` can read the folder directly. Empty means files
+    /// land in `out_dir` itself.
+    pub(crate) basename: String,
+    /// True after the dialog has been opened with a wind map loaded
+    /// at least once this session. Prevents subsequent opens from
+    /// clobbering user edits with newly-derived defaults.
+    pub(crate) populated: bool,
 }
 
 /// View / camera state for the central panel.

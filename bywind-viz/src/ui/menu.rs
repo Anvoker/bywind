@@ -1,6 +1,46 @@
 use crate::app::BywindApp;
 
 impl BywindApp {
+    /// "Reload Sample" button. Pulled out of [`Self::render_menu_bar`]
+    /// because the can-load / has-bundled / is-running ternary plus
+    /// the disabled-hint branching is enough body to push the menu
+    /// renderer over clippy's `too_many_lines` cap.
+    ///
+    /// For builds with the file embedded (`build.rs` saw
+    /// `assets/sample_wind.wcav` at compile time) this is an
+    /// in-binary decode; for builds without it, the sample is pulled
+    /// from raw.githubusercontent on first hit and cached locally for
+    /// subsequent reloads — see `bundled_sample`.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn render_reload_sample_button(&mut self, ui: &mut egui::Ui) {
+        let can_load = crate::bundled_sample::can_load_sample();
+        let has_bundled = crate::bundled_sample::has_bundled_sample();
+        let label = if self.bundled_sample_job.is_running() {
+            "Reload Sample (working…)"
+        } else if has_bundled {
+            "Reload Sample"
+        } else {
+            "Reload Sample (downloads if not cached)"
+        };
+        let disabled_hint = if !can_load {
+            "This build target doesn't support sample loading."
+        } else {
+            "A sample load is already running."
+        };
+        if ui
+            .add_enabled(
+                can_load && !self.bundled_sample_job.is_running(),
+                egui::Button::new(label),
+            )
+            .on_disabled_hover_text(disabled_hint)
+            .clicked()
+        {
+            ui.close();
+            let ctx = ui.ctx().clone();
+            self.start_bundled_sample_decode(&ctx);
+        }
+    }
+
     /// Top menu bar: File menu (load / save wind map and solution, quit) plus
     /// the egui theme toggle. The native-only file-dialog branches are gated
     /// with `cfg(not(target_arch = "wasm32"))`.
@@ -65,6 +105,29 @@ impl BywindApp {
                                 self.editor.fetch_dialog.open = true;
                                 self.fetch_job.reset_log();
                             }
+                            // Ensemble fetch is gated on having a main
+                            // wcav loaded: the dialog derives its
+                            // start / end / interval defaults from the
+                            // loaded map's time range, and the whole
+                            // point is "perturbations for this run."
+                            // No map → nothing to derive from.
+                            // (`has_map` was already bound above for
+                            // the Save Wind Map button.)
+                            if ui
+                                .add_enabled(
+                                    has_map,
+                                    egui::Button::new("Fetch GEFS Ensemble..."),
+                                )
+                                .on_disabled_hover_text(
+                                    "Load a main wind map first — the ensemble fetch \
+                                     derives its time range from the loaded data.",
+                                )
+                                .clicked()
+                            {
+                                ui.close();
+                                self.editor.fetch_ensemble_dialog.open = true;
+                                self.fetch_ensemble_job.reset_log();
+                            }
                             ui.separator();
                             if ui.button("Load Scenario (TOML)...").clicked() {
                                 ui.close();
@@ -113,40 +176,7 @@ impl BywindApp {
                                 }
                             }
                             ui.separator();
-                            // Reload the `wind_av1` sample dataset.
-                            // For builds with the file embedded
-                            // (`build.rs` saw `assets/sample_wind.wcav`
-                            // at compile time) this is an in-binary
-                            // decode; for builds without it, the
-                            // sample is pulled from raw.githubusercontent
-                            // on first hit and cached locally for
-                            // subsequent reloads — see `bundled_sample`.
-                            let can_load = crate::bundled_sample::can_load_sample();
-                            let has_bundled = crate::bundled_sample::has_bundled_sample();
-                            let label = if self.bundled_sample_job.is_running() {
-                                "Reload Sample (working…)"
-                            } else if has_bundled {
-                                "Reload Sample"
-                            } else {
-                                "Reload Sample (downloads if not cached)"
-                            };
-                            let disabled_hint = if !can_load {
-                                "This build target doesn't support sample loading."
-                            } else {
-                                "A sample load is already running."
-                            };
-                            if ui
-                                .add_enabled(
-                                    can_load && !self.bundled_sample_job.is_running(),
-                                    egui::Button::new(label),
-                                )
-                                .on_disabled_hover_text(disabled_hint)
-                                .clicked()
-                            {
-                                ui.close();
-                                let ctx = ui.ctx().clone();
-                                self.start_bundled_sample_decode(&ctx);
-                            }
+                            self.render_reload_sample_button(ui);
                             ui.separator();
                         }
                         if ui.button("Quit").clicked() {

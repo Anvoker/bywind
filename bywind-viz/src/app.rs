@@ -67,6 +67,15 @@ pub struct BywindApp {
     #[serde(skip)]
     pub(crate) fetch_job: crate::fetch::FetchJob,
 
+    /// Background worker + log buffer for `File → Fetch GEFS
+    /// Ensemble…`. Same shape as [`Self::fetch_job`] but iterates
+    /// over K members and writes one `.wcav` per member to disk;
+    /// on success its poll yields the output directory so the app
+    /// can drop it straight into `SearchConfig::ensemble_path`.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[serde(skip)]
+    pub(crate) fetch_ensemble_job: crate::fetch::FetchEnsembleJob,
+
     /// User-facing error rendered as a toast. Cleared on Dismiss.
     #[serde(skip)]
     pub(crate) last_error: Option<String>,
@@ -102,6 +111,8 @@ impl Default for BywindApp {
             bundled_sample_job: AsyncJob::default(),
             #[cfg(not(target_arch = "wasm32"))]
             fetch_job: crate::fetch::FetchJob::default(),
+            #[cfg(not(target_arch = "wasm32"))]
+            fetch_ensemble_job: crate::fetch::FetchEnsembleJob::default(),
             last_error: None,
         }
     }
@@ -671,6 +682,15 @@ impl eframe::App for BywindApp {
             self.view.synthesized_frame = None;
         }
 
+        // Ensemble fetch: on Done(Ok(dir)), point `ensemble_path` at
+        // the freshly-written directory so the next Run Search picks
+        // ensemble mode automatically without the user having to copy
+        // the path into Advanced Params.
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(dir) = self.fetch_ensemble_job.poll() {
+            self.search.ensemble_path = Some(dir);
+        }
+
         // Clamp persisted UI state against the (possibly reloaded) wind map.
         if let Some(wind_map) = &self.wind_map {
             let max_frame = wind_map.frame_count().saturating_sub(1);
@@ -688,6 +708,8 @@ impl eframe::App for BywindApp {
         self.render_grib2_load_dialog(ui);
         #[cfg(not(target_arch = "wasm32"))]
         self.render_fetch_dialog(ui);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.render_fetch_ensemble_dialog(ui);
         self.render_advanced_settings_window(ui.ctx());
         self.render_generate_window(ui.ctx());
         self.render_error_toast(ui);

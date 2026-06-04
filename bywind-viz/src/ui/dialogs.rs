@@ -488,4 +488,315 @@ impl BywindApp {
             }
         });
     }
+
+    /// `File → Fetch GEFS Ensemble…` modal. Mirrors the single-fetch
+    /// dialog in layout (text inputs, Start / Cancel row, scrolling
+    /// log) but defaults its start / end / interval from the
+    /// currently-loaded `wind_map` so the perturbations cover the
+    /// same window as the main file.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) fn render_fetch_ensemble_dialog(&mut self, ui: &egui::Ui) {
+        if !self.editor.fetch_ensemble_dialog.open {
+            return;
+        }
+        self.populate_fetch_ensemble_dialog_defaults_once();
+
+        let mut open = true;
+        let mut start_clicked = false;
+        let mut cancel_clicked = false;
+        let mut browse_clicked = false;
+        egui::Window::new("Fetch GEFS Ensemble")
+            .open(&mut open)
+            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+            .resizable(true)
+            .default_width(560.0)
+            .collapsible(false)
+            .show(ui.ctx(), |ui| {
+                self.render_fetch_ensemble_dialog_inputs(ui, &mut browse_clicked);
+                ui.separator();
+                ui.horizontal(|ui| {
+                    let running = self.fetch_ensemble_job.is_running();
+                    if ui
+                        .add_enabled(!running, egui::Button::new("Start"))
+                        .on_disabled_hover_text("An ensemble fetch is already in progress.")
+                        .clicked()
+                    {
+                        start_clicked = true;
+                    }
+                    if ui
+                        .add_enabled(running, egui::Button::new("Cancel"))
+                        .on_disabled_hover_text("No ensemble fetch is currently running.")
+                        .clicked()
+                    {
+                        cancel_clicked = true;
+                    }
+                    match self.fetch_ensemble_job.phase {
+                        crate::fetch::FetchPhase::Idle => {}
+                        crate::fetch::FetchPhase::Fetching => {
+                            ui.label("fetching…");
+                        }
+                        crate::fetch::FetchPhase::Encoding => {
+                            ui.label("encoding…");
+                        }
+                        crate::fetch::FetchPhase::Cancelling => {
+                            ui.label("cancelling…");
+                        }
+                    }
+                });
+                ui.separator();
+                self.render_fetch_ensemble_dialog_log(ui);
+            });
+
+        if !open {
+            self.editor.fetch_ensemble_dialog.open = false;
+        }
+        if browse_clicked {
+            if let Some(path) = rfd::FileDialog::new()
+                .set_directory(
+                    self.editor
+                        .fetch_ensemble_dialog
+                        .out_dir
+                        .as_str()
+                        .trim_start_matches(['"', '\'']),
+                )
+                .pick_folder()
+            {
+                self.editor.fetch_ensemble_dialog.out_dir = path.to_string_lossy().into_owned();
+            }
+        }
+        if cancel_clicked {
+            self.fetch_ensemble_job.request_cancel();
+        }
+        if start_clicked {
+            self.start_fetch_ensemble_worker(ui.ctx());
+        }
+    }
+
+    /// Form fields for the ensemble fetch dialog: start, end,
+    /// interval, members, destination dir, basename (subfolder).
+    #[cfg(not(target_arch = "wasm32"))]
+    fn render_fetch_ensemble_dialog_inputs(
+        &mut self,
+        ui: &mut egui::Ui,
+        browse_clicked: &mut bool,
+    ) {
+        let running = self.fetch_ensemble_job.is_running();
+        ui.add_enabled_ui(!running, |ui| {
+            egui::Grid::new("fetch_ensemble_dialog_inputs")
+                .num_columns(2)
+                .spacing([8.0, 4.0])
+                .show(ui, |ui| {
+                    ui.label("Start (UTC):").on_hover_text(
+                        "YYYYMMDD or YYYYMMDDHH. Snapped to the most recent 00 / 06 / 12 / 18z \
+                         GEFS cycle. Default = the loaded wind map's start.",
+                    );
+                    ui.text_edit_singleline(
+                        &mut self.editor.fetch_ensemble_dialog.start_text,
+                    );
+                    ui.end_row();
+
+                    ui.label("End (UTC):").on_hover_text(
+                        "YYYYMMDD or YYYYMMDDHH (exclusive). Default = the loaded wind \
+                         map's end.",
+                    );
+                    ui.text_edit_singleline(&mut self.editor.fetch_ensemble_dialog.end_text);
+                    ui.end_row();
+
+                    ui.label("Interval (h):").on_hover_text(
+                        "Hours between successive frames. Default = the loaded wind map's \
+                         step (snapped to GEFS-valid values). The GEFS `pgrb2sp25` subset \
+                         actually publishes at 3-hourly cadence — values below 3 will 404 \
+                         on most frames.",
+                    );
+                    egui::ComboBox::from_id_salt("fetch_ensemble_interval")
+                        .selected_text(format!(
+                            "{} h",
+                            self.editor.fetch_ensemble_dialog.interval_h,
+                        ))
+                        .show_ui(ui, |ui| {
+                            for n in [1u32, 2, 3, 6] {
+                                ui.selectable_value(
+                                    &mut self.editor.fetch_ensemble_dialog.interval_h,
+                                    n,
+                                    format!("{n} h"),
+                                );
+                            }
+                        });
+                    ui.end_row();
+
+                    ui.label("Members:").on_hover_text(
+                        "Number of GEFS members to fetch, stride-sampled from the 31-member \
+                         set (1 control + 30 perturbed). Each member is a full wind dataset \
+                         over the window — K members = K× wallclock and disk.",
+                    );
+                    ui.add(
+                        egui::DragValue::new(&mut self.editor.fetch_ensemble_dialog.members)
+                            .range(1usize..=31)
+                            .speed(1.0),
+                    );
+                    ui.end_row();
+
+                    ui.label("Destination dir:")
+                        .on_hover_text("Parent directory for the run's output folder.");
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(
+                                &mut self.editor.fetch_ensemble_dialog.out_dir,
+                            )
+                            .desired_width(320.0),
+                        );
+                        if ui.button("Browse…").clicked() {
+                            *browse_clicked = true;
+                        }
+                    });
+                    ui.end_row();
+
+                    ui.label("Basename:").on_hover_text(
+                        "Subfolder created under the destination directory. Each member's \
+                         `.wcav` lands inside as `gec00.wcav` / `gepNN.wcav` so the bywind \
+                         loader can read the folder directly. Empty = write into the \
+                         destination dir itself.",
+                    );
+                    ui.text_edit_singleline(
+                        &mut self.editor.fetch_ensemble_dialog.basename,
+                    );
+                    ui.end_row();
+                });
+        });
+    }
+
+    /// Scrolling log pane for the ensemble dialog. Same shape as the
+    /// single-fetch log; sticks to the bottom while events stream in.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn render_fetch_ensemble_dialog_log(&self, ui: &mut egui::Ui) {
+        let running = self.fetch_ensemble_job.is_running();
+        egui::ScrollArea::vertical()
+            .max_height(240.0)
+            .auto_shrink([false, false])
+            .stick_to_bottom(running)
+            .show(ui, |ui| {
+                if self.fetch_ensemble_job.log.is_empty() {
+                    ui.weak("(no activity yet)");
+                } else {
+                    for line in &self.fetch_ensemble_job.log {
+                        ui.label(line);
+                    }
+                }
+            });
+    }
+
+    /// On first open this session — and only when a wind map is
+    /// loaded — populate the dialog's text fields from
+    /// `wind_map.time_range()` and `wind_map.step_seconds()`. The
+    /// time range is snapped down to the nearest prior 6 h GEFS
+    /// cycle; the interval is snapped to the nearest valid GEFS
+    /// cadence in `{1, 2, 3, 6}`. Subsequent opens leave the user's
+    /// edits in place.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn populate_fetch_ensemble_dialog_defaults_once(&mut self) {
+        if self.editor.fetch_ensemble_dialog.populated {
+            return;
+        }
+        let Some(wind_map) = self.wind_map.as_ref() else {
+            return;
+        };
+        if let Some((start, end)) = wind_map.time_range() {
+            let start_snapped = crate::fetch::snap_to_cycle(start);
+            if self.editor.fetch_ensemble_dialog.start_text.is_empty() {
+                self.editor.fetch_ensemble_dialog.start_text =
+                    crate::fetch::format_yyyymmddhh(start_snapped);
+            }
+            if self.editor.fetch_ensemble_dialog.end_text.is_empty() {
+                self.editor.fetch_ensemble_dialog.end_text = crate::fetch::format_yyyymmddhh(end);
+            }
+        }
+        if self.editor.fetch_ensemble_dialog.interval_h == 0 {
+            self.editor.fetch_ensemble_dialog.interval_h =
+                snap_to_gefs_interval(wind_map.step_seconds());
+        }
+        if self.editor.fetch_ensemble_dialog.members == 0 {
+            self.editor.fetch_ensemble_dialog.members = 10;
+        }
+        if self.editor.fetch_ensemble_dialog.out_dir.is_empty() {
+            self.editor.fetch_ensemble_dialog.out_dir =
+                std::env::temp_dir().to_string_lossy().into_owned();
+        }
+        if self.editor.fetch_ensemble_dialog.basename.is_empty() {
+            // Date-stamp default so consecutive opens don't collide.
+            self.editor.fetch_ensemble_dialog.basename =
+                chrono::Utc::now().format("gefs-%Y%m%d-%H%M").to_string();
+        }
+        self.editor.fetch_ensemble_dialog.populated = true;
+    }
+
+    /// Validate dialog inputs and spawn the ensemble fetch worker.
+    /// Failures land as a single log line in the dialog's log area;
+    /// nothing toast-y, since the dialog itself is already open.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn start_fetch_ensemble_worker(&mut self, ctx: &egui::Context) {
+        let dlg = &self.editor.fetch_ensemble_dialog;
+        let start = match crate::fetch::parse_yyyymmddhh(&dlg.start_text) {
+            Ok(t) => t,
+            Err(e) => {
+                self.fetch_ensemble_job.log.push(format!("start: {e}"));
+                return;
+            }
+        };
+        let end = match crate::fetch::parse_yyyymmddhh(&dlg.end_text) {
+            Ok(t) => t,
+            Err(e) => {
+                self.fetch_ensemble_job.log.push(format!("end: {e}"));
+                return;
+            }
+        };
+        if dlg.out_dir.trim().is_empty() {
+            self.fetch_ensemble_job
+                .log
+                .push("destination directory is empty".to_owned());
+            return;
+        }
+        if dlg.members == 0 {
+            self.fetch_ensemble_job
+                .log
+                .push("members must be > 0".to_owned());
+            return;
+        }
+        let spec = bywind::fetch::FetchSpec {
+            start,
+            end,
+            interval_h: dlg.interval_h,
+        };
+        let members = bywind::fetch_ensemble::stride_sample_members(dlg.members);
+        let out_dir = std::path::PathBuf::from(dlg.out_dir.trim());
+        let out_dir = if dlg.basename.trim().is_empty() {
+            out_dir
+        } else {
+            out_dir.join(dlg.basename.trim())
+        };
+        self.fetch_ensemble_job.reset_log();
+        let (rx, cancel) =
+            crate::fetch::spawn_ensemble_worker(spec, members, out_dir, ctx.clone());
+        self.fetch_ensemble_job.attach(rx, cancel);
+    }
+}
+
+/// Snap a source `step_seconds` (typically the loaded wind map's
+/// frame cadence) onto the nearest sensible *default* GEFS interval
+/// in hours.
+///
+/// Combo-box choices are `{1, 2, 3, 6}` (every value the bucket
+/// publishes at), but the *default* floors at 3 because the GEFS
+/// `pgrb2sp25` subset only ships frames at `f000, f003, f006, …`.
+/// Defaulting to 1 or 2 for a fine-grained main file (the bundled
+/// sample is 1 h) would silently produce a fetch where two out of
+/// every three timestamps 404. Users who want sparse coverage can
+/// still pick 1 or 2 explicitly.
+#[cfg(not(target_arch = "wasm32"))]
+fn snap_to_gefs_interval(step_seconds: f32) -> u32 {
+    const DEFAULT_CHOICES: [u32; 2] = [3, 6];
+    let hours = (step_seconds / 3600.0).round().max(1.0) as u32;
+    *DEFAULT_CHOICES
+        .iter()
+        .min_by_key(|v| v.abs_diff(hours))
+        .expect("DEFAULT_CHOICES is non-empty")
 }

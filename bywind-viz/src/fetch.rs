@@ -22,6 +22,7 @@ use bywind::{
         FetchProgress, FetchSpec, fetch_to_grib2, parse_yyyymmddhh as parse_yyyymmddhh_lib,
         transcode_grib2_to_wcav,
     },
+    fetch_ensemble::{GefsMember, fetch_member_to_grib2},
     io::Format,
 };
 use chrono::{DateTime, Timelike as _, Utc};
@@ -309,4 +310,261 @@ pub(crate) fn snap_to_cycle(t: DateTime<Utc>) -> DateTime<Utc> {
         .and_then(|t| t.with_second(0))
         .and_then(|t| t.with_nanosecond(0))
         .expect("the resulting (h, 0, 0, 0) is always a valid time")
+}
+
+/// Events emitted by the ensemble fetch worker. Unlike the
+/// single-member [`FetchEvent`], a successful ensemble fetch yields a
+/// directory path (the loader's input) rather than a `TimedWindMap` —
+/// each member's wcav lives on disk and is loaded on demand.
+pub(crate) enum FetchEnsembleEvent {
+    /// One log line (per-frame progress, per-member status, etc.).
+    Log(String),
+    /// Worker transitioned from network to encoding for a specific
+    /// member. The UI uses this to swap the per-member phase label.
+    EncodingStarted { member: String },
+    /// Terminal event. `Ok(dir)` = path that
+    /// `TimedEnsembleWindMap::load_dir` can read directly;
+    /// `Err(msg)` = unrecoverable failure (every member errored, or
+    /// a directory-level I/O error).
+    Done(Result<PathBuf, String>),
+}
+
+/// State held by [`crate::app::BywindApp`] for the ensemble fetch
+/// dialog. Mirrors [`FetchJob`] but with the ensemble-specific result
+/// type and `Done` shape.
+#[derive(Default)]
+pub(crate) struct FetchEnsembleJob {
+    pub(crate) log: Vec<String>,
+    pub(crate) phase: FetchPhase,
+    rx: Option<Receiver<FetchEnsembleEvent>>,
+    cancel: Option<Arc<AtomicBool>>,
+}
+
+impl FetchEnsembleJob {
+    pub(crate) fn is_running(&self) -> bool {
+        !matches!(self.phase, FetchPhase::Idle)
+    }
+
+    pub(crate) fn attach(&mut self, rx: Receiver<FetchEnsembleEvent>, cancel: Arc<AtomicBool>) {
+        self.rx = Some(rx);
+        self.cancel = Some(cancel);
+        self.phase = FetchPhase::Fetching;
+    }
+
+    pub(crate) fn request_cancel(&mut self) {
+        if let Some(flag) = &self.cancel {
+            flag.store(true, Ordering::Release);
+        }
+        if self.phase == FetchPhase::Fetching {
+            self.phase = FetchPhase::Cancelling;
+        }
+    }
+
+    /// Drain pending events and apply them. Returns the output
+    /// directory on terminal success so the caller can route it into
+    /// `SearchConfig::ensemble_path`. Same disconnect-detection logic
+    /// as [`FetchJob::poll`].
+    pub(crate) fn poll(&mut self) -> Option<PathBuf> {
+        let events = {
+            let rx = self.rx.as_ref()?;
+            let mut buf = Vec::new();
+            let mut saw_done = false;
+            loop {
+                match rx.try_recv() {
+                    Ok(ev) => {
+                        if matches!(&ev, FetchEnsembleEvent::Done(_)) {
+                            saw_done = true;
+                        }
+                        buf.push(ev);
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                        if !saw_done {
+                            buf.push(FetchEnsembleEvent::Done(Err(
+                                "worker disconnected without a Done event".to_owned(),
+                            )));
+                        }
+                        break;
+                    }
+                }
+            }
+            buf
+        };
+
+        let mut delivered = None;
+        for ev in events {
+            match ev {
+                FetchEnsembleEvent::Log(line) => self.append_log(line),
+                FetchEnsembleEvent::EncodingStarted { member } => {
+                    self.phase = FetchPhase::Encoding;
+                    self.append_log(format!("  member {member}: encoding…"));
+                }
+                FetchEnsembleEvent::Done(Ok(dir)) => {
+                    self.append_log(format!("done → {}", dir.display()));
+                    self.phase = FetchPhase::Idle;
+                    delivered = Some(dir);
+                    self.rx = None;
+                    self.cancel = None;
+                }
+                FetchEnsembleEvent::Done(Err(msg)) => {
+                    self.append_log(format!("error: {msg}"));
+                    self.phase = FetchPhase::Idle;
+                    self.rx = None;
+                    self.cancel = None;
+                }
+            }
+        }
+        delivered
+    }
+
+    pub(crate) fn reset_log(&mut self) {
+        self.log.clear();
+    }
+
+    fn append_log(&mut self, line: String) {
+        self.log.push(line);
+        if self.log.len() > MAX_LOG_LINES {
+            let excess = self.log.len() - MAX_LOG_LINES;
+            self.log.drain(..excess);
+        }
+    }
+}
+
+/// Spawn an ensemble fetch worker. Iterates `members` sequentially —
+/// each member is K network-bound frame requests, so members-in-
+/// parallel would just compete for bandwidth without reducing
+/// wallclock much (same call-out as the CLI's `fetch-ensemble`). On
+/// success every member's `.wcav` lands in `out_dir` with the bare
+/// `gec00.wcav` / `gepNN.wcav` names the bywind loader expects.
+pub(crate) fn spawn_ensemble_worker(
+    spec: FetchSpec,
+    members: Vec<GefsMember>,
+    out_dir: PathBuf,
+    ctx: egui::Context,
+) -> (Receiver<FetchEnsembleEvent>, Arc<AtomicBool>) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_for_worker = Arc::clone(&cancel);
+    std::thread::spawn(move || {
+        let result = run_ensemble_worker(&spec, &members, &out_dir, &tx, &cancel_for_worker, &ctx);
+        drop(tx.send(FetchEnsembleEvent::Done(result)));
+        ctx.request_repaint();
+    });
+    (rx, cancel)
+}
+
+/// Mirrors the CLI's `fetch-ensemble` flow: per-member network pull
+/// into a staging GRIB2, then `transcode_grib2_to_wcav` into the
+/// canonical `.wcav` location. One member failing logs and continues
+/// (the cohort is still useful with K-1); zero members succeeding is
+/// fatal.
+fn run_ensemble_worker(
+    spec: &FetchSpec,
+    members: &[GefsMember],
+    out_dir: &Path,
+    tx: &Sender<FetchEnsembleEvent>,
+    cancel: &Arc<AtomicBool>,
+    ctx: &egui::Context,
+) -> Result<PathBuf, String> {
+    if let Err(e) = std::fs::create_dir_all(out_dir) {
+        return Err(format!("creating {}: {e}", out_dir.display()));
+    }
+    drop(tx.send(FetchEnsembleEvent::Log(format!(
+        "fetching {} members → {}",
+        members.len(),
+        out_dir.display(),
+    ))));
+    ctx.request_repaint();
+
+    let mut succeeded = 0usize;
+    for (m_idx, member) in members.iter().enumerate() {
+        if cancel.load(Ordering::Acquire) {
+            return Err("cancelled".to_owned());
+        }
+        let prefix = member.filename_prefix();
+        drop(tx.send(FetchEnsembleEvent::Log(format!(
+            "[{}/{}] member {prefix} — pulling…",
+            m_idx + 1,
+            members.len(),
+        ))));
+        ctx.request_repaint();
+
+        let wcav_path = out_dir.join(format!("{prefix}.wcav"));
+        let staging = wcav_path.with_extension("grib2.tmp");
+        let stats_result = {
+            let file = match File::create(&staging) {
+                Ok(f) => f,
+                Err(e) => {
+                    drop(tx.send(FetchEnsembleEvent::Log(format!(
+                        "  member {prefix}: creating staging {}: {e}",
+                        staging.display(),
+                    ))));
+                    continue;
+                }
+            };
+            let mut writer = BufWriter::new(file);
+            let tx_ref = tx.clone();
+            let ctx_ref = ctx.clone();
+            let cancel_ref = Arc::clone(cancel);
+            fetch_member_to_grib2(spec, *member, &mut writer, |event| {
+                drop(tx_ref.send(FetchEnsembleEvent::Log(format_progress(&event))));
+                ctx_ref.request_repaint();
+                if cancel_ref.load(Ordering::Acquire) {
+                    std::ops::ControlFlow::Break(())
+                } else {
+                    std::ops::ControlFlow::Continue(())
+                }
+            })
+        };
+        if cancel.load(Ordering::Acquire) {
+            drop(std::fs::remove_file(&staging));
+            return Err("cancelled".to_owned());
+        }
+        let stats = match stats_result {
+            Ok(s) => s,
+            Err(e) => {
+                drop(tx.send(FetchEnsembleEvent::Log(format!(
+                    "  member {prefix} fetch failed: {e}",
+                ))));
+                drop(std::fs::remove_file(&staging));
+                continue;
+            }
+        };
+        drop(tx.send(FetchEnsembleEvent::Log(format!(
+            "  member {prefix}: {} frames ({} skipped, {} KB)",
+            stats.fetched,
+            stats.skipped,
+            stats.total_bytes / 1024,
+        ))));
+        drop(tx.send(FetchEnsembleEvent::EncodingStarted { member: prefix.clone() }));
+        ctx.request_repaint();
+        match transcode_grib2_to_wcav(&staging, &wcav_path) {
+            Ok(_) => {
+                drop(tx.send(FetchEnsembleEvent::Log(format!(
+                    "  member {prefix}: encoded → {}",
+                    wcav_path.display(),
+                ))));
+                succeeded += 1;
+            }
+            Err(e) => {
+                drop(tx.send(FetchEnsembleEvent::Log(format!(
+                    "  member {prefix}: encode failed: {e}",
+                ))));
+            }
+        }
+        if let Err(e) = std::fs::remove_file(&staging) {
+            drop(tx.send(FetchEnsembleEvent::Log(format!(
+                "  note: failed to delete staging {}: {e}",
+                staging.display(),
+            ))));
+        }
+    }
+
+    if succeeded == 0 {
+        return Err(format!(
+            "no members fetched successfully across {} attempts",
+            members.len(),
+        ));
+    }
+    Ok(out_dir.to_path_buf())
 }
