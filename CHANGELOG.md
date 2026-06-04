@@ -5,13 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows pre-1.0 SemVer where the minor version bumps on breaking changes.
 
+## [Unreleased]
+
+### Fixed
+- **Viz right-panel regression.** A one-time-tall Summary block (ensemble
+  spread + benchmark grid + long-route segment list) was locking the bottom
+  sub-panel's height via `egui::Panel`'s persisted `rect`, permanently
+  squishing the Segments scroll above it. Replaced the nested
+  `Panel::bottom` + `CentralPanel` with a plain top-down flow where the
+  Summary sizes to its actual content each frame and the Segments
+  `ScrollArea` takes whatever's left. The view selector is now anchored
+  directly under the Summary heading so it doesn't shift when the bench /
+  spread / main-comparison blocks below it reflow.
+
 ## [0.2.0] - 2026-06-04
 
-First release with ensemble-forecast support. The PSO can now optimise against a
-K-member GEFS ensemble instead of a single deterministic wind map, and the viz
-shows per-realization spread alongside the main gbest.
+The PSO can now optimise against a K-member GEFS ensemble instead of a single
+deterministic wind map, and the viz shows per-realization spread alongside the
+main gbest. The landmass model also gains strait carve-outs and a two-tier SDF
+so routes through narrow channels (Gibraltar, Bosporus, Malacca, …) come back
+land-free.
 
-### Added
+### Added — ensemble
 - **Ensemble search.** `TimedEnsembleWindMap` / `BakedEnsembleWindMap` load a
   directory of `.wcav` files (`gec00` control + `gepNN` perturbations) and feed
   them into the optimiser. `EnsembleMode::Full` runs K-fold robust fitness;
@@ -32,11 +47,43 @@ shows per-realization spread alongside the main gbest.
 - **Viz: GEFS fetch dialog.** `File → Fetch GEFS Ensemble…` pulls a 31-member
   ensemble for the currently-loaded wcav's time window and writes a sibling
   directory.
-- **Viz: live search progress.** The A* benchmark renders as soon as it's
-  computed (before the PSO begins); the gbest-so-far streams to the canvas on
-  every PSO iteration. Phase indicator chip (loading / baking / benchmark /
-  search) covers the dead time on cold starts.
-- **Viz: route-horizon warning.** Flagged when the route runtime exceeds the
+
+### Added — landmass
+- **Strait carve-outs.** `STRAIT_CARVE_OUTS` punches holes in the rasterised
+  land mask for Gibraltar, the Dardanelles/Marmara, the Bosporus,
+  Bab-el-Mandeb, Malacca, and Singapore — A*, SDF, the fitness penalty, and
+  boundary repulsion all share the same open channels.
+- **Two-tier SDF.** `TwoTierLandmass` aggregates a coarse global grid with
+  fine `FinePatch` tiles around each strait carve-out, and `find_sea_path`
+  runs a unified-graph A* that expands at the cell's own tier and hops
+  between tiers at fine-bbox boundaries. Opt-in via
+  `SearchConfig::fine_sdf_resolution_deg: Option<f64>` (default `Some(0.1)`).
+  On the Black Sea → Biscay scenario the benchmark route now reports 0 km of
+  land (was 218 km) and PSO converges 0.8% better than the benchmark instead
+  of 45% worse.
+- **`sampling_step_metres` clamp.** `get_segment_land_metres` substeps at
+  half a cell, so 150-km PSO chords no longer underreport land when
+  `step_distance_max` was sized for continental wind integration.
+- **Unbiased A* fallback** in `compute_baselines` when the biased pathfinder
+  returns `None`, so init seeds particles on real sea polylines in narrow
+  basins like the Mediterranean.
+- **`sdf_resolution_deg` in TOML.** The existing GUI knob for landmass cell
+  size now round-trips through scenario TOML and the CLI.
+- **Viz: SDF cell overlay.** "Show SDF cells" paints sea cells translucent
+  blue and land cells translucent red, so the user can see what the search
+  actually considers sea — particularly around the strait carve-outs, which
+  read as capsule-shaped sea tubes the polygon coastline doesn't show.
+- **Viz: two-tier overlay.** When two-tier is enabled the overlay paints
+  coarse cells outside fine bboxes plus each patch's own cells, with the
+  fine patches at higher fill alpha and darker stroke so the two grids read
+  distinctly where they meet.
+
+### Added — viz
+- **Live search progress.** The A* benchmark renders as soon as it's
+  computed (before the PSO begins); the gbest-so-far streams to the canvas
+  on every PSO iteration. A phase indicator chip (loading / baking /
+  benchmark / search) covers the dead time on cold starts.
+- **Route-horizon warning.** Flagged when the route runtime exceeds the
   loaded wind's data horizon.
 
 ### Changed
@@ -65,7 +112,14 @@ shows per-realization spread alongside the main gbest.
   light backgrounds).
 
 ### Internal
+- **SDF resolution benchmarks** added under `bywind-dev` (unpublished):
+  `sdf_resolution_bench` for grid-build / A* / bulk SDF query timing across
+  0.5° → 0.1° resolutions, and `sdf_quality_bench` for full-search
+  fitness × seeds. The latter confirms finer SDF is a perf knob, not a
+  route-quality lever (~1% worse mean fitness at 0.2° with 26–63% wider
+  stddev than 0.5°).
 - `cargo fmt` normalised across the workspace as a separate `chore(fmt)`
   precursor commit.
 
+[Unreleased]: https://github.com/Anvoker/bywind/compare/v0.2.0...HEAD
 [0.2.0]: https://github.com/Anvoker/bywind/releases/tag/v0.2.0
