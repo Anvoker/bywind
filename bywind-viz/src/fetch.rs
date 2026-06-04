@@ -536,7 +536,9 @@ fn run_ensemble_worker(
             stats.skipped,
             stats.total_bytes / 1024,
         ))));
-        drop(tx.send(FetchEnsembleEvent::EncodingStarted { member: prefix.clone() }));
+        drop(tx.send(FetchEnsembleEvent::EncodingStarted {
+            member: prefix.clone(),
+        }));
         ctx.request_repaint();
         match transcode_grib2_to_wcav(&staging, &wcav_path) {
             Ok(_) => {

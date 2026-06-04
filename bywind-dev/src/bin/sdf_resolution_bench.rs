@@ -37,13 +37,23 @@ const SCENARIOS: &[Scenario] = &[
         name: "Sinai (Med -> Arabian Sea, around Africa)",
         origin: LatLon::new(12.894705772399902, 36.113094329833984),
         destination: LatLon::new(55.21006393432617, 10.023117065429688),
-        bbox: LonLatBbox { lon_min: -32.35, lon_max: 69.85, lat_min: -49.85, lat_max: 52.35 },
+        bbox: LonLatBbox {
+            lon_min: -32.35,
+            lon_max: 69.85,
+            lat_min: -49.85,
+            lat_max: 52.35,
+        },
     },
     Scenario {
         name: "Black Sea -> Bay of Biscay",
         origin: LatLon::new(30.451622009277344, 42.87483596801758),
         destination: LatLon::new(-3.651212692260742, 45.15494155883789),
-        bbox: LonLatBbox { lon_min: -32.35, lon_max: 69.85, lat_min: -49.85, lat_max: 52.35 },
+        bbox: LonLatBbox {
+            lon_min: -32.35,
+            lon_max: 69.85,
+            lat_min: -49.85,
+            lat_max: 52.35,
+        },
     },
 ];
 
@@ -76,7 +86,12 @@ fn bench_build(cell_deg: f64) -> std::time::Duration {
 fn bench_astar(grid: &LandmassGrid, scenario: &Scenario) -> (std::time::Duration, usize) {
     let bounds = RouteBounds::new(scenario.origin, scenario.destination, scenario.bbox);
     let start = Instant::now();
-    let path = grid.find_sea_path(scenario.origin, scenario.destination, &bounds, SeaPathBias::None);
+    let path = grid.find_sea_path(
+        scenario.origin,
+        scenario.destination,
+        &bounds,
+        SeaPathBias::None,
+    );
     let elapsed = start.elapsed();
     let vertices = path.as_ref().map(|p| p.len()).unwrap_or(0);
     (elapsed, vertices)
@@ -93,9 +108,13 @@ fn bench_bulk_queries(grid: &LandmassGrid, bbox: &LonLatBbox, count: usize) -> s
     let mut sum = 0.0_f64;
     let start = Instant::now();
     for _ in 0..count {
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         let r1 = ((state >> 32) as f64) / (u32::MAX as f64);
-        state = state.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        state = state
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         let r2 = ((state >> 32) as f64) / (u32::MAX as f64);
         let lon = lon_min + r1 * (lon_max - lon_min);
         let lat = lat_min + r2 * (lat_max - lat_min);
@@ -140,7 +159,12 @@ fn main() {
     println!();
 
     println!("## Bulk `signed_distance_m` queries ({QUERY_COUNT} random points in Med bbox)\n");
-    let med = LonLatBbox { lon_min: -10.0, lon_max: 40.0, lat_min: 30.0, lat_max: 46.0 };
+    let med = LonLatBbox {
+        lon_min: -10.0,
+        lon_max: 40.0,
+        lat_min: 30.0,
+        lat_max: 46.0,
+    };
     println!("| resolution | total time | per-query (ns) |");
     println!("|---|---|---|");
     for &res in RESOLUTIONS_DEG {

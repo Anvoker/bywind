@@ -4,7 +4,9 @@
 //! mutate; this module owns only the value-side types those adapters
 //! produce.
 
-use bywind::{BakedWindMap, BenchmarkRoute, EnsembleSpread, RealizationRun, RouteEvolution, SegmentMetrics};
+use bywind::{
+    BakedWindMap, BenchmarkRoute, EnsembleSpread, RealizationRun, RouteEvolution, SegmentMetrics,
+};
 use swarmkit_sailing::{Boat, RouteBounds};
 
 /// Message sent from the time-reoptimization worker thread back to the UI on

@@ -119,7 +119,11 @@ pub fn run(args: &FetchEnsembleArgs) -> Result<(), AppError> {
         let t0 = Instant::now();
         match transcode_grib2_to_wcav(&staging, &wcav_path) {
             Ok(_) => {
-                eprintln!("  encoded in {:.1}s → {}", t0.elapsed().as_secs_f64(), wcav_path.display());
+                eprintln!(
+                    "  encoded in {:.1}s → {}",
+                    t0.elapsed().as_secs_f64(),
+                    wcav_path.display()
+                );
                 total_fetched += stats.fetched;
                 total_skipped += stats.skipped;
                 total_bytes += stats.total_bytes;
@@ -130,7 +134,10 @@ pub fn run(args: &FetchEnsembleArgs) -> Result<(), AppError> {
             }
         }
         if let Err(e) = std::fs::remove_file(&staging) {
-            eprintln!("  note: failed to delete staging {}: {e}", staging.display());
+            eprintln!(
+                "  note: failed to delete staging {}: {e}",
+                staging.display()
+            );
         }
     }
 
@@ -179,4 +186,3 @@ fn log_progress(ev: FetchProgress) -> std::ops::ControlFlow<()> {
 fn format_when(t: DateTime<Utc>) -> String {
     t.format("%Y-%m-%d %H:%M UTC").to_string()
 }
-

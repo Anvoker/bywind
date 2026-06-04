@@ -319,10 +319,7 @@ impl BywindApp {
                 ));
                 ui.end_row();
 
-                ui.label(format!(
-                    "Main land: {}",
-                    format_land_km(main_total_land),
-                ));
+                ui.label(format!("Main land: {}", format_land_km(main_total_land),));
                 ui.label(format!(
                     "({})",
                     format_delta(main_total_land, realization_total_land, false, "Main"),
@@ -451,14 +448,16 @@ impl BywindApp {
                 ));
                 ui.end_row();
             });
-        let worst = ens
-            .per_member
-            .iter()
-            .min_by(|a, b| a.fitness.partial_cmp(&b.fitness).unwrap_or(std::cmp::Ordering::Equal));
-        let best = ens
-            .per_member
-            .iter()
-            .max_by(|a, b| a.fitness.partial_cmp(&b.fitness).unwrap_or(std::cmp::Ordering::Equal));
+        let worst = ens.per_member.iter().min_by(|a, b| {
+            a.fitness
+                .partial_cmp(&b.fitness)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let best = ens.per_member.iter().max_by(|a, b| {
+            a.fitness
+                .partial_cmp(&b.fitness)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         if let (Some(w), Some(b)) = (worst, best) {
             ui.label(format!(
                 "Worst: {} ({})    Best: {} ({})",
@@ -852,7 +851,11 @@ impl BywindApp {
                     Some(std::path::PathBuf::from(path_str.trim()))
                 };
             }
-            if ui.button("Clear").on_hover_text("Reset to single-deterministic").clicked() {
+            if ui
+                .button("Clear")
+                .on_hover_text("Reset to single-deterministic")
+                .clicked()
+            {
                 self.search.ensemble_path = None;
             }
         });
@@ -1023,12 +1026,15 @@ impl BywindApp {
         }
 
         ui.checkbox(&mut self.view.show_all_particles, "Show all particles");
-        ui.checkbox(&mut self.view.show_realization_routes, "Show realization routes")
-            .on_hover_text(
-                "Overlay the K per-realization routes on the central panel. \
+        ui.checkbox(
+            &mut self.view.show_realization_routes,
+            "Show realization routes",
+        )
+        .on_hover_text(
+            "Overlay the K per-realization routes on the central panel. \
                  Each route is a translucent polyline in a per-realization \
                  palette colour. No-op until you've run \"Run per realization\".",
-            );
+        );
         ui.checkbox(&mut self.view.show_sdf_overlay, "Show SDF cells")
             .on_hover_text(
                 "Overlay the rasterised landmass SDF on top of the coastlines. \

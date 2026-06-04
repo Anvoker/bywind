@@ -114,10 +114,7 @@ impl BywindApp {
                             // (`has_map` was already bound above for
                             // the Save Wind Map button.)
                             if ui
-                                .add_enabled(
-                                    has_map,
-                                    egui::Button::new("Fetch GEFS Ensemble..."),
-                                )
+                                .add_enabled(has_map, egui::Button::new("Fetch GEFS Ensemble..."))
                                 .on_disabled_hover_text(
                                     "Load a main wind map first — the ensemble fetch \
                                      derives its time range from the loaded data.",

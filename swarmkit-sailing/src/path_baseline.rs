@@ -654,7 +654,12 @@ mod tests {
         let bounds = RouteBounds::new(
             (-15.0, 0.0),
             (15.0, 0.0),
-            LonLatBbox { lon_min: -20.0, lon_max: 20.0, lat_min: -12.0, lat_max: 12.0 },
+            LonLatBbox {
+                lon_min: -20.0,
+                lon_max: 20.0,
+                lat_min: -12.0,
+                lat_max: 12.0,
+            },
         );
         let positions = sample_land_respecting::<8, _>(&polyline, &bounds, &land);
 
@@ -687,7 +692,12 @@ mod tests {
         let bounds = RouteBounds::new(
             (0.0, 0.0),
             (100.0, 0.0),
-            LonLatBbox { lon_min: -10.0, lon_max: 110.0, lat_min: -5.0, lat_max: 5.0 },
+            LonLatBbox {
+                lon_min: -10.0,
+                lon_max: 110.0,
+                lat_min: -5.0,
+                lat_max: 5.0,
+            },
         );
         let positions = sample_land_respecting::<6, _>(&polyline, &bounds, &dummy);
         assert_eq!(positions[0], LatLon::new(0.0, 0.0));

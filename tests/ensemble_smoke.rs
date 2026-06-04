@@ -98,10 +98,8 @@ fn ensemble_single_member_fast_mean_matches_single_deterministic() {
         vec![wind],
         vec!["gec00".to_owned()],
     ));
-    let baked_ens =
-        BakedEnsembleWindMap::from_members(vec![baked_b], vec!["gec00".to_owned()]);
-    let fast_mean_result =
-        run_with_wind(WindInput::ensemble_fast_mean(baked_ens), bounds);
+    let baked_ens = BakedEnsembleWindMap::from_members(vec![baked_b], vec!["gec00".to_owned()]);
+    let fast_mean_result = run_with_wind(WindInput::ensemble_fast_mean(baked_ens), bounds);
 
     let single_fit = final_fitness(&single_result);
     let fast_fit = final_fitness(&fast_mean_result);
@@ -120,18 +118,22 @@ fn ensemble_full_k_three_produces_finite_fitness() {
     // Three distinct synthetic wind maps. Verifies the K-fold loop
     // runs through the search end-to-end without panicking and
     // produces a finite (negative-but-real) fitness.
-    let members: Vec<TimedWindMap> = (0..3)
-        .map(|i| synthetic_wind(WIND_SEED_BASE + i))
-        .collect();
+    let members: Vec<TimedWindMap> = (0..3).map(|i| synthetic_wind(WIND_SEED_BASE + i)).collect();
     let bounds = MapBounds::from_wind_map(&members[0]).expect("non-empty");
     let bake_bounds = bounds.to_bake_bounds(BAKE_STEP);
-    let baked: Vec<_> = members.iter().map(|m| m.clone().bake(bake_bounds)).collect();
+    let baked: Vec<_> = members
+        .iter()
+        .map(|m| m.clone().bake(bake_bounds))
+        .collect();
     let names: Vec<String> = (0..3).map(|i| format!("gep{i:02}")).collect();
     let ensemble = BakedEnsembleWindMap::from_members(baked, names);
 
     let result = run_with_wind(WindInput::ensemble_full(ensemble), bounds);
     let fit = final_fitness(&result);
-    assert!(fit.is_finite(), "ensemble Full fitness must be finite, got {fit}");
+    assert!(
+        fit.is_finite(),
+        "ensemble Full fitness must be finite, got {fit}"
+    );
     assert!(
         fit < 0.0,
         "fitness is negated cost, expected < 0, got {fit}",
@@ -150,7 +152,10 @@ fn ensemble_spread_time_varies_across_distinct_members() {
         .collect();
     let bounds = MapBounds::from_wind_map(&members[0]).expect("non-empty");
     let bake_bounds = bounds.to_bake_bounds(BAKE_STEP);
-    let baked: Vec<_> = members.iter().map(|m| m.clone().bake(bake_bounds)).collect();
+    let baked: Vec<_> = members
+        .iter()
+        .map(|m| m.clone().bake(bake_bounds))
+        .collect();
     let names: Vec<String> = (0..3).map(|i| format!("gep{i:02}")).collect();
     let ensemble = BakedEnsembleWindMap::from_members(baked, names);
 
@@ -187,7 +192,10 @@ fn run_realizations_returns_one_run_per_member_with_finite_fitness() {
         .collect();
     let bounds = MapBounds::from_wind_map(&members[0]).expect("non-empty");
     let bake_bounds = bounds.to_bake_bounds(BAKE_STEP);
-    let baked_members: Vec<_> = members.iter().map(|m| m.clone().bake(bake_bounds)).collect();
+    let baked_members: Vec<_> = members
+        .iter()
+        .map(|m| m.clone().bake(bake_bounds))
+        .collect();
     let names: Vec<String> = vec!["gec00".to_owned(), "gep01".to_owned(), "gep02".to_owned()];
     let ensemble = BakedEnsembleWindMap::from_members(baked_members, names.clone());
 

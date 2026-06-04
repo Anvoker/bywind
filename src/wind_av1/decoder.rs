@@ -176,8 +176,7 @@ pub fn decode<R: Read>(reader: R) -> Result<TimedWindMap, DecodeError> {
     // survive round-trip. For v1/v2 we synthesised uniform offsets in
     // `read_header`, so this path is equivalent to the old
     // `TimedWindMap::new(frames, step_seconds)` for those files.
-    let mut map =
-        TimedWindMap::new_with_offsets(frames, header.step_seconds, header.frame_offsets);
+    let mut map = TimedWindMap::new_with_offsets(frames, header.step_seconds, header.frame_offsets);
     if let Some((s, e)) = header.time_range {
         map = map.with_time_range(s, e);
     }
@@ -327,8 +326,9 @@ fn read_v3_frame_times_raw<R: Read>(
         // slice is exactly 8 bytes. Surfaced via `Result` instead of
         // `expect` so the function stays fallible-shaped end-to-end
         // (clippy nags on `expect` inside `Result`-returning code).
-        let arr: [u8; 8] =
-            chunk.try_into().map_err(|err: std::array::TryFromSliceError| {
+        let arr: [u8; 8] = chunk
+            .try_into()
+            .map_err(|err: std::array::TryFromSliceError| {
                 DecodeError::Io(io::Error::other(format!(
                     "v3 frame-times: {err} (unreachable; chunks_exact(8) should guarantee 8 bytes)",
                 )))

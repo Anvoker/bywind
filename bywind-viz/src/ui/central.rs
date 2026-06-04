@@ -372,10 +372,8 @@ impl BywindApp {
                 crate::draw::draw_sdf_overlay(ui.painter(), view, grid);
             }
             Some(fine) => {
-                let two_tier = bywind::landmass::landmass_grid_two_tier(
-                    self.search.sdf_resolution_deg,
-                    fine,
-                );
+                let two_tier =
+                    bywind::landmass::landmass_grid_two_tier(self.search.sdf_resolution_deg, fine);
                 crate::draw::draw_sdf_overlay_two_tier(ui.painter(), view, two_tier);
             }
         }
