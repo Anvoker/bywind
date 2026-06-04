@@ -49,13 +49,30 @@ The core library is headless; the GUI (`bywind-viz`) and CLI (`bywind-cli`) are 
 - `baked_codec` — companion binary format for `BakedWindMap` (zstd-compressed). Native-only.
 - `io` — extension-dispatched `load(...)` that picks between GRIB2 and `wind_av1`. Native-only.
 - `bounds`, `auto_bounds` — `MapBounds` and `derive_route_bbox` (A*-probed bbox that detours around continents).
-- `search` — `run_search_blocking`, `run_search_blocking_with_baked`, `run_time_reopt_blocking`, `SearchResult`, `SearchWeights`, `BAKE_STEP`.
+- `ensemble` — `TimedEnsembleWindMap`, `BakedEnsembleWindMap`. K-member wind data loaded from a `.wcav` directory (GEFS naming: `gec00` control + `gepNN` perturbations). See "Ensemble feature" below for vocabulary.
+- `search` — `run_search_blocking`, `run_search_blocking_with_baked`, `run_time_reopt_blocking`, `run_realizations`. Types: `SearchResult`, `SearchWeights`, `WindInput`, `EnsembleSpread`, `MemberMetrics`, `RealizationRun`. `BAKE_STEP`.
 - `route` — `RouteEvolution` (type-erases the const-generic waypoint count), `BenchmarkRoute`, `WaypointCount`. `GbestView` / `GbestViewMut` stay scoped under `route::`.
 - `metrics` — per-segment fuel / time / speed / land breakdown.
 - `landmass` — Natural Earth landmass grid (`assets/ne_50m_land.geojson`, embedded) and A* sea-path finder. Cell size is configurable per call via `landmass_grid_at_resolution(deg)` (cached in a per-resolution registry behind a Mutex); the no-arg `landmass_grid()` returns the cached `SDF_RESOLUTION_DEG = 0.5°` default. Consumer-side, `SearchConfig::sdf_resolution_deg` (with UI / TOML plumbing) flows down to `run_search_blocking`'s `sdf_resolution_deg` argument.
-- `solution` — `SavedSolution` JSON schema for a single search result.
-- `scenario`, `config` — `BoatConfig`, `SearchConfig`, `SearchWeights`, `CliConfigFile`. Layer TOML files + CLI overrides.
+- `solution` — `SavedSolution` JSON schema for a single search result. Carries `Option<SavedEnsemble>` (paired `EnsembleMode` + `EnsembleSpread`) for ensemble-sourced solutions; absent for single-deterministic.
+- `scenario`, `config` — `BoatConfig`, `SearchConfig`, `SearchWeights`, `CliConfigFile`, `EnsembleMode`. Layer TOML files + CLI overrides.
 - `fmt` — shared human-readable formatters (durations / fuel / distances / PSO-vs-benchmark deltas).
+
+### Ensemble feature
+
+The optimiser can run against a multi-member ensemble (GEFS perturbations: `gec00` + `gep01..gep30`) rather than a single deterministic wind map. The canonical vocabulary — used in types, fields, UI labels, and commit messages:
+
+- **Ensemble** — collection of K wind realizations. Loaded from a directory of `.wcav` files via `TimedEnsembleWindMap::load_dir`; baked into a `BakedEnsembleWindMap` whose members share grid geometry.
+- **Member** — one wind dataset inside an ensemble. Indexed by `k`, stably ordered by filename so the member-index ↔ file mapping is reproducible across runs.
+- **Realization** — one member viewed as a self-contained weather hypothesis ("if member k were the true future wind"). Identity mapping from member → realization; we use "member" when talking about the data and "realization" when talking about the role it plays in a search.
+- **`EnsembleMode`** — aggregation strategy. `Full` runs K-fold robust fitness via `RobustObjective::Mean` (every particle scored against all K members); `FastMean` collapses the ensemble to a single mean wind map (`BakedEnsembleWindMap::mean`) and runs the existing single-deterministic search against it. Fast-mean is ~K× faster but `E[f(x, wind)] ≠ f(x, E[wind])` — for routes in the linear-polar regime the gap is typically <1%.
+- **Main search** — the primary PSO search against the whole ensemble under an `EnsembleMode`. Produces one converged gbest route. "main" is the canonical adjective in types, comments, and UI.
+- **`EnsembleSpread`** — per-member evaluation of the main gbest path: *same route, K winds*. Held in `SearchResult::ensemble: Option<EnsembleSpread>`. Narrow spread ⇒ robust route; wide spread ⇒ brittle. Per-member time-reopt is required (see the doc comment in `src/search.rs`) so the time axis doesn't collapse to `sum(gbest.t)` across members.
+- **`RealizationRun`** — output of an *independent* PSO search against one member (`bywind::run_realizations` runs K of these). K decoupled routes, displayed as a translucent overlay in the viz for visual comparison against the main gbest. Distinct from spread: spread evaluates *the main* path against members; realization runs produce *K independent* paths.
+
+`SavedSolution` persists ensemble runs via `Option<SavedEnsemble> { mode, spread }`; single-deterministic saves keep the field omitted via `#[serde(skip_serializing_if = "Option::is_none")]` so the schema stays backward-compatible.
+
+Detail-level data-path documentation (load / bake / mean) lives in `src/ensemble.rs`'s module-level `//!` block.
 
 ### Public-surface re-exports from `swarmkit-sailing`
 `bywind` re-exports `Boat`, `SearchSettings`, `RouteBounds`, `LonLatBbox`, `Topology` from `swarmkit-sailing` at its crate root, so consumers can drive the search without depending on `swarmkit-sailing` directly. The two ship in lockstep (pinned minor); `pub use` preserves type identity for callers that do want both.
