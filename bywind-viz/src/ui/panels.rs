@@ -947,6 +947,22 @@ impl BywindApp {
                     .current_search_phase
                     .map_or("searching…", bywind::SearchPhase::label);
                 ui.label(label);
+                // During the main PSO phase, show the per-iteration
+                // progress badge — visible convergence cue alongside
+                // the live route overlay. Best-fit included so the
+                // user can spot when the search has plateaued.
+                if let Some(live) = self.outputs.live_gbest.as_ref() {
+                    let fit_str = if self.view.total_time_breakdown {
+                        format_fitness_magnitude(live.best_fit)
+                    } else {
+                        format!("{:.0}", live.best_fit)
+                    };
+                    ui.weak(format!(
+                        "(iter {}/{}, fit {fit_str})",
+                        live.iter_idx + 1,
+                        live.total_iters,
+                    ));
+                }
             });
         }
 

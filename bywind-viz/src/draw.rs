@@ -1386,6 +1386,69 @@ pub(crate) fn realization_palette_color(idx: usize, alpha: u8) -> egui::Color32 
     egui::Color32::from_rgba_unmultiplied(r, g, b, alpha)
 }
 
+/// Polyline-only path draw from raw `(xs, ys)` waypoint arrays.
+///
+/// Sibling of [`draw_realization_route`] but takes `&[f64]` slices
+/// instead of a const-generic `Path<N>`, so it can render
+/// type-erased payloads — specifically the gbest snapshot streamed
+/// from the search worker via `SearchProgressEvent::Iteration`,
+/// which has its `N` erased into `Vec<f64>` at the event boundary.
+///
+/// Same antimeridian-unwrap + shadow-tile loop as the other route
+/// renderers; no node markers or waypoint labels (the in-flight
+/// overlay should read as "search is converging," not as a final
+/// drawable route).
+pub(crate) fn draw_live_polyline(
+    painter: &egui::Painter,
+    view: &ViewTransform,
+    xs: &[f64],
+    ys: &[f64],
+    stroke_color: egui::Color32,
+) {
+    if xs.len() != ys.len() || xs.len() < 2 {
+        return;
+    }
+    let mut points: Vec<egui::Pos2> = xs
+        .iter()
+        .zip(ys.iter())
+        .map(|(&lon, &lat)| view.route_to_screen(lon, lat))
+        .collect();
+    let world_width_px = world_width_pixels(view);
+    if world_width_px.is_finite() && world_width_px > 0.0 {
+        let half = world_width_px * 0.5;
+        let mut prev_x = points.first().map_or(0.0, |p| p.x);
+        for p in points.iter_mut().skip(1) {
+            let dx = p.x - prev_x;
+            if dx > half {
+                p.x -= world_width_px;
+            } else if dx < -half {
+                p.x += world_width_px;
+            }
+            prev_x = p.x;
+        }
+    }
+    let (path_x_min, path_x_max) = points
+        .iter()
+        .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), p| {
+            (lo.min(p.x), hi.max(p.x))
+        });
+    let panel = painter.clip_rect();
+    let stroke = egui::Stroke::new(1.8, stroke_color);
+    for shift in shadow_offsets(world_width_px) {
+        if !shift.is_finite() {
+            continue;
+        }
+        if path_x_max + shift < panel.min.x || path_x_min + shift > panel.max.x {
+            continue;
+        }
+        for w in points.windows(2) {
+            if let [a, b] = w {
+                painter.line_segment([shift_x(*a, shift), shift_x(*b, shift)], stroke);
+            }
+        }
+    }
+}
+
 /// Polyline-only path draw for the per-realization overlay. Reuses the
 /// same antimeridian-unwrap + shadow-tile loop as [`draw_path`] so a
 /// realization route that crosses the seam still appears across both

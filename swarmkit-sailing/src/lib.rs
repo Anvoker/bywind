@@ -210,6 +210,38 @@ impl Default for SearchSettings {
     }
 }
 
+/// Run the full search and report per-outer-iteration gbest snapshots
+/// via `on_iter` as they land.
+///
+/// Behaviour is identical to [`search`] — same inputs, same return,
+/// same RNG seeding semantics — with one extra callback that fires
+/// once per completed outer iteration with the iteration index
+/// (`0..max_iteration_space`) and the searcher's current best
+/// particle. Useful when a UI wants to paint the gbest path as it
+/// converges instead of waiting for the terminal result.
+///
+/// The callback is `&mut dyn FnMut(...)`, so it can hold mutable
+/// state (e.g. an mpsc sender) across iterations. Cost is one
+/// dynamic dispatch per outer iteration — negligible against the
+/// PSO inner work.
+pub fn search_with_progress<
+    const N: usize,
+    SB: Sailboat,
+    WS: WindSource,
+    LS: LandmassSource,
+    TFit: FitCalc<T = Path<N>> + SailboatFitData,
+>(
+    boat: &SB,
+    wind_source: &WS,
+    landmass: &LS,
+    route_bounds: RouteBounds,
+    fit_calc: &TFit,
+    settings: SearchSettings,
+    on_iter: &mut dyn FnMut(usize, &Best<Path<N>>),
+) -> (Best<Path<N>>, Evolution<Path<N>>) {
+    search_inner(boat, wind_source, landmass, route_bounds, fit_calc, settings, on_iter)
+}
+
 pub fn search<
     const N: usize,
     SB: Sailboat,
@@ -223,6 +255,28 @@ pub fn search<
     route_bounds: RouteBounds,
     fit_calc: &TFit,
     settings: SearchSettings,
+) -> (Best<Path<N>>, Evolution<Path<N>>) {
+    // Thin delegate so existing callers (CLI tune-trial, dev binaries,
+    // tests) don't need to thread a no-op callback through their
+    // call sites. The closure is one machine-code path shared across
+    // all callers — no monomorphisation cost for variants.
+    search_inner(boat, wind_source, landmass, route_bounds, fit_calc, settings, &mut |_, _| {})
+}
+
+fn search_inner<
+    const N: usize,
+    SB: Sailboat,
+    WS: WindSource,
+    LS: LandmassSource,
+    TFit: FitCalc<T = Path<N>> + SailboatFitData,
+>(
+    boat: &SB,
+    wind_source: &WS,
+    landmass: &LS,
+    route_bounds: RouteBounds,
+    fit_calc: &TFit,
+    settings: SearchSettings,
+    on_iter: &mut dyn FnMut(usize, &Best<Path<N>>),
 ) -> (Best<Path<N>>, Evolution<Path<N>>) {
     // Per-search reset of the sub-stage counters so the dump at the end
     // reflects only this search. No-op when the feature is off.
@@ -339,6 +393,7 @@ pub fn search<
             max_iteration_space,
             &mut group,
             &mut evolution,
+            on_iter,
         ),
         Topology::Niched => run_to_completion(
             chained.into_niched_searcher(path_fit_for_searcher, partition),
@@ -346,6 +401,7 @@ pub fn search<
             max_iteration_space,
             &mut group,
             &mut evolution,
+            on_iter,
         ),
         Topology::Ring => run_to_completion(
             chained.into_lbest_searcher(path_fit_for_searcher, LBestKind::Ring { k: 1 }),
@@ -353,6 +409,7 @@ pub fn search<
             max_iteration_space,
             &mut group,
             &mut evolution,
+            on_iter,
         ),
         Topology::VonNeumann => run_to_completion(
             chained.into_lbest_searcher(path_fit_for_searcher, LBestKind::VonNeumann),
@@ -360,6 +417,7 @@ pub fn search<
             max_iteration_space,
             &mut group,
             &mut evolution,
+            on_iter,
         ),
     };
 
@@ -390,17 +448,25 @@ fn run_to_completion<const N: usize, S>(
     max_iter: usize,
     group: &mut swarmkit::Group<Path<N>>,
     evolution: &mut Evolution<Path<N>>,
+    on_iter: &mut dyn FnMut(usize, &Best<Path<N>>),
 ) -> Best<Path<N>>
 where
     S: Searcher<TUnit = Path<N>>,
 {
     searcher.reseed(master_rng);
-    // Fold the per-iteration snapshots; the closure discards the
-    // accumulator and keeps the latest snapshot, so the final return
-    // value is whatever the searcher yielded last.
+    // Fold the per-iteration snapshots; the closure fires the
+    // progress callback then discards the accumulator and keeps the
+    // latest snapshot, so the final return value is whatever the
+    // searcher yielded last. The `enumerate` gives the callback an
+    // iteration index in `0..max_iter` consistent with the rest of
+    // swarmkit's bookkeeping.
     searcher
         .iter(max_iter, group, Some(evolution))
-        .fold(Best::default(), |_acc, snapshot| snapshot)
+        .enumerate()
+        .fold(Best::default(), |_acc, (idx, snapshot)| {
+            on_iter(idx, &snapshot);
+            snapshot
+        })
 }
 
 /// Re-runs only the inner time PSO over `fixed_path`, holding

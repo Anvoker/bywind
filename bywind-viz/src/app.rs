@@ -316,6 +316,10 @@ impl BywindApp {
         // search runs. The new bench lands via `BenchmarkReady` as
         // soon as the worker's A* + time-PSO step completes.
         self.outputs.benchmark = None;
+        // Same for any leftover live gbest from a previous search.
+        // Per-iteration snapshots from the new search will repopulate
+        // it once the PSO loop starts.
+        self.outputs.live_gbest = None;
 
         if let Some(ensemble_path) = ensemble_dispatch {
             // Ensemble path: load + bake + search all in the worker
@@ -635,9 +639,26 @@ impl eframe::App for BywindApp {
                     Ok(SearchProgressEvent::BenchmarkReady(b)) => {
                         self.outputs.benchmark = Some(b);
                     }
+                    Ok(SearchProgressEvent::Iteration {
+                        iter_idx,
+                        total_iters,
+                        gbest_xs,
+                        gbest_ys,
+                        gbest_ts,
+                        best_fit,
+                    }) => {
+                        self.outputs.live_gbest = Some(crate::search::LiveGbest {
+                            iter_idx,
+                            total_iters,
+                            xs: gbest_xs,
+                            ys: gbest_ys,
+                            ts: gbest_ts,
+                            best_fit,
+                        });
+                    }
                     // `SearchProgressEvent` is `#[non_exhaustive]`;
-                    // future event kinds (e.g. per-iteration gbest)
-                    // land here and get ignored until we hook them up.
+                    // future event kinds land here and get ignored
+                    // until we hook them up.
                     Ok(_) => {}
                     Err(std::sync::mpsc::TryRecvError::Empty) => break,
                     Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -656,6 +677,11 @@ impl eframe::App for BywindApp {
             // outcome so the status label stops claiming the search
             // is still in flight.
             self.current_search_phase = None;
+            // The real `route_evolution` (or an error toast) is about
+            // to take over — clear the live snapshot so the central
+            // panel's overlay routes through the terminal data instead
+            // of stale per-iter state.
+            self.outputs.live_gbest = None;
             match msg {
                 Ok(SearchResult {
                     route_evolution,

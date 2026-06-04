@@ -51,6 +51,16 @@ pub(crate) struct SearchOutputs {
     #[serde(skip)]
     pub(crate) best_fitness: Option<f64>,
 
+    /// Current best-particle snapshot streamed in by the search
+    /// worker as the PSO iterates (one update per outer iteration).
+    /// `Some` only while a search is running; cleared on terminal
+    /// `Done` (the real `route_evolution` takes over) and on the
+    /// next Run Search start. Rendered by the central panel as a
+    /// "this is where the search is right now" overlay when
+    /// `route_evolution.is_none()`.
+    #[serde(skip)]
+    pub(crate) live_gbest: Option<LiveGbest>,
+
     /// A*-shortest-path benchmark route from the last completed search:
     /// the unbiased sea path with PSO over the time dimension only,
     /// scored against the same fit calc as the main result. `None` when
@@ -104,6 +114,24 @@ pub(crate) struct SearchOutputs {
     /// search starts; not persisted (session-local state).
     #[serde(skip)]
     pub(crate) last_search_seed: Option<u64>,
+}
+
+/// Most recent gbest snapshot streamed from the search worker.
+/// Mirrors the field set of `bywind::SearchProgressEvent::Iteration`
+/// in struct form so the viz can hold one at rest.
+pub(crate) struct LiveGbest {
+    pub(crate) iter_idx: usize,
+    pub(crate) total_iters: usize,
+    pub(crate) xs: Vec<f64>,
+    pub(crate) ys: Vec<f64>,
+    #[expect(
+        dead_code,
+        reason = "kept for future per-segment overlays; route-overlay only \
+                  uses xs/ys for now but the field rounds out the 'gbest \
+                  snapshot' shape and matches the SearchProgressEvent."
+    )]
+    pub(crate) ts: Vec<f64>,
+    pub(crate) best_fit: f64,
 }
 
 /// Which route the right-side stats panel renders.

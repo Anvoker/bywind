@@ -6,7 +6,7 @@ use swarmkit::FitCalc as _;
 use swarmkit_sailing::{
     Boat, EnsembleSailboatFitCalc, LandmassSource, Path, PathBaseline, RobustObjective,
     RouteBounds, SailboatFitCalc, SeaPathBias, SearchSettings, get_segment_fuel_and_time,
-    get_segment_land_metres, reoptimize_times, search, walk_segments_against_wind,
+    get_segment_land_metres, reoptimize_times, search_with_progress, walk_segments_against_wind,
     weighted_fitness,
 };
 
@@ -411,6 +411,30 @@ pub enum SearchProgressEvent {
     /// / bbox excludes all water); the search continues but there's
     /// no benchmark to compare against in that case.
     BenchmarkReady(BenchmarkRoute),
+    /// One outer PSO iteration finished. `gbest_xs` / `gbest_ys` /
+    /// `gbest_ts` carry the current best particle's `(lon, lat, t)`
+    /// arrays — one entry per waypoint. Lets the UI paint the route
+    /// as it converges instead of waiting for the terminal
+    /// [`SearchResult`]. Fires once per outer iteration, so the total
+    /// over a search equals `search_settings.max_iteration_space`.
+    ///
+    /// Const-generic `N` is type-erased into [`Vec<f64>`] at the event
+    /// boundary so the variant is shape-stable across waypoint counts.
+    Iteration {
+        /// Zero-based outer iteration index that just completed.
+        iter_idx: usize,
+        /// Total outer iterations the search will run (the
+        /// `max_iteration_space` from `SearchSettings`).
+        total_iters: usize,
+        /// `(lon, lat)` per waypoint and segment durations in seconds
+        /// — see [`crate::route::RouteEvolution`] for the same layout
+        /// in the terminal result.
+        gbest_xs: Vec<f64>,
+        gbest_ys: Vec<f64>,
+        gbest_ts: Vec<f64>,
+        /// Current best fitness (negated cost — higher is better).
+        best_fit: f64,
+    },
 }
 
 /// Coarse phase markers for the search pipeline.
@@ -659,13 +683,25 @@ fn run_search_inner<LS: LandmassSource>(
             progress(SearchProgressEvent::BenchmarkReady(b.clone()));
         }
         progress(SearchProgressEvent::Phase(SearchPhase::RunningPso));
-        let (gbest, evolution) = search::<N, _, _, _, _>(
+        let total_iters = search_settings.max_iteration_space;
+        let mut on_iter = |idx: usize, snapshot: &swarmkit::Best<Path<N>>| {
+            progress(SearchProgressEvent::Iteration {
+                iter_idx: idx,
+                total_iters,
+                gbest_xs: snapshot.best_pos.xy.0.0.to_vec(),
+                gbest_ys: snapshot.best_pos.xy.1.0.to_vec(),
+                gbest_ts: snapshot.best_pos.t.0.0.to_vec(),
+                best_fit: snapshot.best_fit,
+            });
+        };
+        let (gbest, evolution) = search_with_progress::<N, _, _, _, _>(
             &ship,
             &baked,
             land,
             route_bounds,
             &fit_calc,
             search_settings,
+            &mut on_iter,
         );
         if cfg!(debug_assertions) {
             assert!(!gbest.best_fit.is_nan(), "NaN in gbest: best_fit");
@@ -787,13 +823,25 @@ fn run_search_inner_ensemble<LS: LandmassSource>(
         // only needs `WindSource::sample_wind`, not per-member
         // fitness — using the mean here keeps the baselines stable.
         progress(SearchProgressEvent::Phase(SearchPhase::RunningPso));
-        let (gbest, evolution) = search::<N, _, _, _, _>(
+        let total_iters = search_settings.max_iteration_space;
+        let mut on_iter = |idx: usize, snapshot: &swarmkit::Best<Path<N>>| {
+            progress(SearchProgressEvent::Iteration {
+                iter_idx: idx,
+                total_iters,
+                gbest_xs: snapshot.best_pos.xy.0.0.to_vec(),
+                gbest_ys: snapshot.best_pos.xy.1.0.to_vec(),
+                gbest_ts: snapshot.best_pos.t.0.0.to_vec(),
+                best_fit: snapshot.best_fit,
+            });
+        };
+        let (gbest, evolution) = search_with_progress::<N, _, _, _, _>(
             &ship,
             &mean,
             land,
             route_bounds,
             &ensemble_fit_calc,
             search_settings,
+            &mut on_iter,
         );
         if cfg!(debug_assertions) {
             assert!(!gbest.best_fit.is_nan(), "NaN in gbest: best_fit");

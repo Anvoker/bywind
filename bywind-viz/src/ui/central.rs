@@ -1,8 +1,9 @@
 use super::{
     LonLatBbox, MAP_PADDING, MapBounds, SCALE_MAX, Tool, ViewTransform, draw_benchmark_route,
-    draw_coastlines, draw_endpoint_markers, draw_minimap, draw_realization_route,
-    draw_route_bounds, draw_windmap, min_render_scale, powered_by_egui_and_eframe,
-    realization_palette_color, render_route_evolution, route_evolution_match,
+    draw_coastlines, draw_endpoint_markers, draw_live_polyline, draw_minimap,
+    draw_realization_route, draw_route_bounds, draw_windmap, min_render_scale,
+    powered_by_egui_and_eframe, realization_palette_color, render_route_evolution,
+    route_evolution_match,
 };
 use crate::app::BywindApp;
 
@@ -257,28 +258,39 @@ impl BywindApp {
         view: &ViewTransform,
         waypoint_label: Option<crate::draw::WaypointLabel>,
     ) {
-        let Some(re) = &self.outputs.route_evolution else {
+        if let Some(re) = &self.outputs.route_evolution {
+            let weights = bywind::SearchWeights {
+                time_weight: self.search.time_weight,
+                fuel_weight: self.search.fuel_weight,
+                land_weight: self.search.land_weight,
+            };
+            route_evolution_match!(re, |evolution| render_route_evolution(
+                ui.painter(),
+                view,
+                evolution,
+                self.outputs.iteration,
+                self.view.show_all_particles,
+                self.outputs.baked_wind_map.as_ref(),
+                self.outputs.boat.as_ref(),
+                self.outputs.route_bounds,
+                weights,
+                &mut self.outputs.segment_stats,
+                &mut self.outputs.best_fitness,
+                waypoint_label,
+            ));
             return;
-        };
-        let weights = bywind::SearchWeights {
-            time_weight: self.search.time_weight,
-            fuel_weight: self.search.fuel_weight,
-            land_weight: self.search.land_weight,
-        };
-        route_evolution_match!(re, |evolution| render_route_evolution(
-            ui.painter(),
-            view,
-            evolution,
-            self.outputs.iteration,
-            self.view.show_all_particles,
-            self.outputs.baked_wind_map.as_ref(),
-            self.outputs.boat.as_ref(),
-            self.outputs.route_bounds,
-            weights,
-            &mut self.outputs.segment_stats,
-            &mut self.outputs.best_fitness,
-            waypoint_label,
-        ));
+        }
+        // No terminal `RouteEvolution` yet — but the search worker may
+        // have streamed a partial gbest snapshot in via the
+        // `Iteration` progress event. Draw it as a polyline so the
+        // user sees the route converging instead of a blank panel.
+        // Same hue as the final gbest's primary stroke, slightly
+        // translucent to read as "in-flight" rather than "decided".
+        if let Some(live) = self.outputs.live_gbest.as_ref() {
+            const LIVE_ALPHA: u8 = 200;
+            let color = egui::Color32::from_rgba_unmultiplied(255, 165, 80, LIVE_ALPHA);
+            draw_live_polyline(ui.painter(), view, &live.xs, &live.ys, color);
+        }
     }
 
     /// Per-realization overlay. For each entry in
