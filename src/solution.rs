@@ -8,8 +8,9 @@
 use swarmkit::{Evolution, Particle};
 use swarmkit_sailing::{Floats, Path, PathXY, Time, Topology};
 
-use crate::config::topology_serde;
+use crate::config::{EnsembleMode, topology_serde};
 use crate::route::{RouteEvolution, WaypointCount};
+use crate::search::EnsembleSpread;
 use crate::waypoint_match;
 
 /// Serializable snapshot of a search result.
@@ -63,6 +64,22 @@ pub struct SavedSolution {
     pub path_kick_gamma_0_fraction: f64,
     #[serde(default = "default_path_kick_gamma_min_fraction")]
     pub path_kick_gamma_min_fraction: f64,
+    /// Ensemble data captured at search time: aggregation mode + per-member
+    /// spread of the gbest path under each member's wind. `None` for
+    /// single-deterministic searches.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ensemble: Option<SavedEnsemble>,
+}
+
+/// Ensemble metadata persisted alongside a [`SavedSolution`]: the mode the
+/// search ran in and the per-member evaluation of the converged gbest path.
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
+pub struct SavedEnsemble {
+    /// Aggregation strategy the main search used (`Full` K-fold or
+    /// `FastMean`).
+    pub mode: EnsembleMode,
+    /// Per-member spread of the gbest path's metrics: same route, K winds.
+    pub spread: EnsembleSpread,
 }
 
 fn default_path_kick_probability() -> f64 {
@@ -78,6 +95,7 @@ fn default_path_kick_gamma_min_fraction() -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::search::MemberMetrics;
 
     /// Older saved-solution JSON (pre-`seed`/`topology`/`path_kick_*`) must
     /// still parse, with the missing fields filled from `SearchConfig`'s
@@ -102,6 +120,7 @@ mod tests {
         assert_eq!(saved.n, 5);
         assert_eq!(saved.seed, None);
         assert_eq!(saved.topology, Topology::default());
+        assert!(saved.ensemble.is_none());
         let cfg_default = crate::config::SearchConfig::default();
         assert!((saved.path_kick_probability - cfg_default.path_kick_probability).abs() < 1e-12);
         assert!(
@@ -111,6 +130,72 @@ mod tests {
         assert!(
             (saved.path_kick_gamma_min_fraction - cfg_default.path_kick_gamma_min_fraction).abs()
                 < 1e-12,
+        );
+    }
+
+    /// New-format save with ensemble data round-trips: mode + per-member
+    /// metrics survive a JSON write/read cycle bit-for-bit, and
+    /// single-deterministic saves omit the field entirely (the
+    /// `skip_serializing_if` guard keeps single-deterministic JSON quiet).
+    #[test]
+    fn ensemble_field_round_trips() {
+        let original = SavedSolution {
+            n: 2,
+            xs: vec![0.0, 1.0],
+            ys: vec![0.0, 1.0],
+            ts: vec![0.0, 100.0],
+            best_fit: -42.0,
+            time_weight: 1.0,
+            fuel_weight: 5.0,
+            particles_space: 8,
+            particles_time: 8,
+            iter_space: 4,
+            iter_time: 4,
+            seed: Some(7),
+            topology: Topology::default(),
+            path_kick_probability: 0.0,
+            path_kick_gamma_0_fraction: 0.0,
+            path_kick_gamma_min_fraction: 0.0,
+            ensemble: Some(SavedEnsemble {
+                mode: EnsembleMode::Full,
+                spread: EnsembleSpread {
+                    per_member: vec![
+                        MemberMetrics {
+                            name: "gec00".to_owned(),
+                            time_s: 12_345.0,
+                            fuel_kg: 678.0,
+                            land_m: 0.0,
+                            fitness: -9.0,
+                        },
+                        MemberMetrics {
+                            name: "gep01".to_owned(),
+                            time_s: 12_900.0,
+                            fuel_kg: 690.0,
+                            land_m: 0.0,
+                            fitness: -9.5,
+                        },
+                    ],
+                },
+            }),
+        };
+        let json = serde_json::to_string(&original).expect("serialize");
+        let restored: SavedSolution = serde_json::from_str(&json).expect("deserialize");
+        let ens = restored.ensemble.as_ref().expect("ensemble present");
+        assert_eq!(ens.mode, EnsembleMode::Full);
+        assert_eq!(ens.spread.per_member.len(), 2);
+        assert_eq!(ens.spread.per_member[0].name, "gec00");
+        assert_eq!(ens.spread.per_member[1].name, "gep01");
+
+        // Single-deterministic saves keep the JSON quiet — `ensemble: null`
+        // would clutter every solution file in the common case.
+        let single = SavedSolution {
+            ensemble: None,
+            ..original
+        };
+        let json = serde_json::to_string(&single).expect("serialize");
+        assert!(
+            !json.contains("\"ensemble\""),
+            "single-deterministic save should omit the ensemble field: {json}",
         );
     }
 }

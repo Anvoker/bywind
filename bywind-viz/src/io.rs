@@ -1,4 +1,4 @@
-use bywind::{Grib2Bbox, MapBounds, SavedSolution, WaypointCount};
+use bywind::{Grib2Bbox, MapBounds, SavedEnsemble, SavedSolution, WaypointCount};
 
 use crate::app::BywindApp;
 
@@ -13,6 +13,14 @@ impl BywindApp {
             .route_evolution
             .as_ref()?
             .gbest_at(self.outputs.iteration)?;
+        // The ensemble field is `Some` iff this search ran against an
+        // ensemble path (the viz worker populates `outputs.ensemble` only
+        // on that branch); pair it with the `ensemble_mode` actually used
+        // so a reload knows which aggregation produced the route.
+        let ensemble = self.outputs.ensemble.as_ref().map(|spread| SavedEnsemble {
+            mode: self.search.ensemble_mode,
+            spread: spread.clone(),
+        });
         Some(SavedSolution {
             n: gbest.xs.len(),
             xs: gbest.xs.to_vec(),
@@ -30,6 +38,7 @@ impl BywindApp {
             path_kick_probability: self.search.path_kick_probability,
             path_kick_gamma_0_fraction: self.search.path_kick_gamma_0_fraction,
             path_kick_gamma_min_fraction: self.search.path_kick_gamma_min_fraction,
+            ensemble,
         })
     }
 
@@ -95,6 +104,18 @@ impl BywindApp {
         self.search.path_kick_probability = saved.path_kick_probability;
         self.search.path_kick_gamma_0_fraction = saved.path_kick_gamma_0_fraction;
         self.search.path_kick_gamma_min_fraction = saved.path_kick_gamma_min_fraction;
+        // Restore the ensemble spread + mode so the right-panel block
+        // reappears for a loaded ensemble solution. `None` clears the
+        // block (single-deterministic saves keep the old behaviour).
+        match saved.ensemble {
+            Some(ens) => {
+                self.search.ensemble_mode = ens.mode;
+                self.outputs.ensemble = Some(ens.spread);
+            }
+            None => {
+                self.outputs.ensemble = None;
+            }
+        }
         self.outputs.segment_stats = None;
         self.outputs.best_fitness = None;
         self.outputs.bake_duration = None;

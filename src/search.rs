@@ -51,7 +51,7 @@ pub struct SearchResult {
 /// path's `t` array, not from the wind — without it, every member
 /// shares `time_s = sum(gbest.t)` and the time axis of the spread
 /// collapses to a single value.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct EnsembleSpread {
     pub per_member: Vec<MemberMetrics>,
 }
@@ -62,7 +62,7 @@ pub struct EnsembleSpread {
 /// See [`EnsembleSpread`] for the reopt protocol. `land_m` is
 /// shared across members (wind-independent) but stored per-member for
 /// symmetry with the aggregate display layer.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct MemberMetrics {
     /// Filename stem of the source `.wcav`, e.g. `"gec00"` or
     /// `"gep08"`. Lets the UI show "worst-case: gep23, best-case:

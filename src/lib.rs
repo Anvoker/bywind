@@ -117,7 +117,7 @@ pub use route::{BenchmarkRoute, RouteEvolution, WaypointCount};
 // Persistence: serialisable schema for a single solution. The
 // `LoadError` enum stays scoped at `solution::LoadError` — see the
 // note above the `Grib2Bbox` re-export.
-pub use solution::SavedSolution;
+pub use solution::{SavedEnsemble, SavedSolution};
 
 // Landmass: A* sea-path support. `landmass_grid()` returns the
 // `SDF_RESOLUTION_DEG = 0.5°` default grid; `landmass_grid_at_resolution`

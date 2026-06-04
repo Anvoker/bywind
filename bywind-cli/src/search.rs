@@ -23,8 +23,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context as _, Result, anyhow};
 use bywind::{
     BakedWindMap, BenchmarkRoute, BoatConfig, EnsembleMode, EnsembleSpread, LonLatBbox,
-    MapBounds, RouteBounds, RouteEvolution, SavedSolution, SearchConfig, SearchResult,
-    SearchWeights, SegmentMetrics, WaypointCount, baked_codec, derive_route_bbox,
+    MapBounds, RouteBounds, RouteEvolution, SavedEnsemble, SavedSolution, SearchConfig,
+    SearchResult, SearchWeights, SegmentMetrics, WaypointCount, baked_codec, derive_route_bbox,
     format_bbox_flag, gbest_segment_metrics, landmass_grid, run_search_blocking,
     run_search_blocking_with_baked,
 };
@@ -238,7 +238,11 @@ pub fn run(args: &SearchArgs) -> Result<(), AppError> {
     )
     .ok_or_else(|| AppError::internal(anyhow!("search produced no iterations")))?;
 
-    let saved = build_saved_solution(&route_evolution, &search_cfg)?;
+    let saved_ensemble = ensemble.as_ref().map(|spread| SavedEnsemble {
+        mode: args.ensemble_mode,
+        spread: spread.clone(),
+    });
+    let saved = build_saved_solution(&route_evolution, &search_cfg, saved_ensemble)?;
     write_solution(&saved, args.out.as_deref())?;
     print_summary(
         &saved,
@@ -652,6 +656,7 @@ fn parse_bounds_4(s: &str) -> Result<[f64; 4]> {
 fn build_saved_solution(
     route_evolution: &RouteEvolution,
     search_cfg: &SearchConfig,
+    ensemble: Option<SavedEnsemble>,
 ) -> Result<SavedSolution, AppError> {
     let last_iter = route_evolution.iter_count().saturating_sub(1);
     let gbest = route_evolution
@@ -674,6 +679,7 @@ fn build_saved_solution(
         path_kick_probability: search_cfg.path_kick_probability,
         path_kick_gamma_0_fraction: search_cfg.path_kick_gamma_0_fraction,
         path_kick_gamma_min_fraction: search_cfg.path_kick_gamma_min_fraction,
+        ensemble,
     })
 }
 
